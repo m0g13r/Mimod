@@ -58,6 +58,8 @@ in /media, /run/media, and /mnt, automatically mapping them to the UI slots as t
 Active Interface Routing: The networking logic ignores virtual bridges, tunnels,
 and inactive ports, locking onto the primary data-carrying interface (Wi-Fi or Ethernet) in real-time.
 
+(Mimod.png)
+
 ── Technical Architecture ────────────────────────────
 
 Execution Safety: Uses flock file-locking to ensure background scripts
