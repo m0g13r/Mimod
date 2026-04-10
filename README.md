@@ -1,0 +1,2 @@
+# Mimod
+Mimod conky theme
