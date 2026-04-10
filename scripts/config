@@ -1,0 +1,97 @@
+#!/bin/bash
+
+# Base directory
+BASE_DIR="$HOME/.config/conky/Mimod"
+
+# Weather API Configuration
+CITY_ID=""
+API_KEY="1d1cdef8934hfer8fhdwidfc934c267910c01"
+UNIT=""
+WEATHER_LANG=""
+
+# Network Configuration
+# Manual network interface. Leave empty ("") for automatic detection.
+NET_INTERFACE=""
+
+# Quote Source Configuration
+# Options: "ZENQUOTES" | "BRAINYQUOTE" | "RANDOMQUOTE" | "QUOTABLE" | "ROUNDROBIN"
+# "ROUNDROBIN" cycles through all sources.
+QUOTE_SOURCE="ROUNDROBIN"
+
+# Disk Mount Configuration
+# Manual mount names/paths. Leave empty ("") for automatic detection.
+MOUNT_NAME_1=""
+MOUNT_NAME_2=""
+MOUNT_NAME_3=""
+MOUNT_NAME_4=""
+
+MOUNT_PATH_1=""
+MOUNT_PATH_2=""
+MOUNT_PATH_3=""
+MOUNT_PATH_4=""
+
+# CPU Temperature Unit Override
+# Options: "C" for Celsius, "F" for Fahrenheit, "" for automatic based on location
+TEMP_UNIT_OVERRIDE=""
+
+#Show Cover-Art .. needs 
+COVER_ART="true"
+
+# ── colors (6-digit hex, # optional) ─────────────────────────────────────
+
+# Main text, icons, disc names
+COLOR_TEXT="eeeeee"
+
+# Player controls text
+COLOR_PLAYER="000000"
+
+# Accent Color: Weather Description
+COLOR_ACCENT="e0e077"
+
+# Secondary text: upload/download speeds, CPU/RAM/disk percentages
+COLOR_SECONDARY="999999"
+
+# Quote text
+COLOR_QUOTE="999999"
+
+# Artist name
+COLOR_ARTIST="678BD9"
+
+# Progress ring around cover art
+COLOR_PROGRESS="678BD9"
+
+# Rings and network chart
+COLOR_CPU="e0e077"
+COLOR_MEM="E37D7D"
+COLOR_TEMP="678BD9"
+COLOR_DISK="9BD19B"
+COLOR_NET_UP="E37D7D"
+COLOR_NET_DOWN="9BD19B"
+
+# Background image (must be in /res/)
+BACKGROUND="semitrans2.png"
+
+
+# Export all variables for use by other scripts
+export BASE_DIR CITY_ID API_KEY UNIT WEATHER_LANG NET_INTERFACE QUOTE_SOURCE
+export MOUNT_NAME_1 MOUNT_NAME_2 MOUNT_NAME_3 MOUNT_NAME_4
+export MOUNT_PATH_1 MOUNT_PATH_2 MOUNT_PATH_3 MOUNT_PATH_4
+export TEMP_UNIT_OVERRIDE COLOR_PROGRESS COLOR_ARTIST COLOR_PLAYER
+
+# Fallback User Agents
+# A robust list of User-Agents to prevent API blocks
+UAS=(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0"
+    "Mozilla/5.0 (X11; Linux i686; rv:121.0) Gecko/20100101 Firefox/121.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0 Safari/537.36"
+)
+
+get_random_ua() {
+    echo "${UAS[$RANDOM % ${#UAS[@]}]}"
+}
+
+export -f get_random_ua
