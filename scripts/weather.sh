@@ -13,6 +13,26 @@ UA=$(get_random_ua)
 
 trap 'rm -f "$TEMP_FILE"' EXIT
 
+json_get() {
+    local json="$1" key="$2"
+    if command -v jq &>/dev/null; then
+        echo "$json" | jq -r "${key} // empty" 2>/dev/null
+    else
+        python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    keys = '${key}'.lstrip('.').split('.')
+    v = d
+    for k in keys:
+        v = v[k]
+    print(v if v is not None else '')
+except Exception:
+    pass
+" <<< "$json" 2>/dev/null
+    fi
+}
+
 fetch_data() {
     curl -s --max-time 5 \
         -H 'Referer: https://google.com' \
@@ -71,10 +91,8 @@ determine_locale() {
     local country="$1"
     local detected_lang="en"
     local detected_unit="metric"
-
     [[ -n "${LANG_MAP[$country]}" ]] && detected_lang="${LANG_MAP[$country]}"
     [[ "$country" == "US" ]] && detected_unit="imperial"
-
     WEATHER_LANG="$detected_lang"
     UNIT="$detected_unit"
     export WEATHER_LANG UNIT
@@ -104,25 +122,24 @@ get_location_and_config() {
         for provider_entry in "${GEO_PROVIDERS[@]}"; do
             IFS='|' read -r provider_url LAT_PATH LON_PATH COUNTRY_PATH <<< "$provider_entry"
             GEO_DATA=$(fetch_data "$provider_url")
-            if [[ -n "$GEO_DATA" ]]; then
-                if [[ "$LAT_PATH" == ".loc" ]]; then
-                    local LOC
-                    LOC=$(printf "%s\n" "$GEO_DATA" | jq -r '.loc // empty' 2>/dev/null)
-                    COUNTRY=$(printf "%s\n" "$GEO_DATA" | jq -r '.country // empty' 2>/dev/null)
-                    if [[ "$LOC" =~ ^([0-9.-]+),([0-9.-]+)$ ]]; then
-                        LAT=${BASH_REMATCH[1]}
-                        LON=${BASH_REMATCH[2]}
-                    fi
-                else
-                    LAT=$(printf "%s\n" "$GEO_DATA" | jq -r "${LAT_PATH} // empty" 2>/dev/null)
-                    LON=$(printf "%s\n" "$GEO_DATA" | jq -r "${LON_PATH} // empty" 2>/dev/null)
-                    COUNTRY=$(printf "%s\n" "$GEO_DATA" | jq -r "${COUNTRY_PATH} // empty" 2>/dev/null)
+            [[ -z "$GEO_DATA" ]] && continue
+            if [[ "$LAT_PATH" == ".loc" ]]; then
+                local LOC
+                LOC=$(json_get "$GEO_DATA" ".loc")
+                COUNTRY=$(json_get "$GEO_DATA" ".country")
+                if [[ "$LOC" =~ ^(-?[0-9]+\.?[0-9]*),(-?[0-9]+\.?[0-9]*)$ ]]; then
+                    LAT="${BASH_REMATCH[1]}"
+                    LON="${BASH_REMATCH[2]}"
                 fi
-                if [[ -n "$LAT" && "$LAT" != "null" && "$LAT" =~ ^-?[0-9]*\.?[0-9]+$ ]]; then
-                    break
-                else
-                    LAT="" LON="" COUNTRY=""
-                fi
+            else
+                LAT=$(json_get "$GEO_DATA" "$LAT_PATH")
+                LON=$(json_get "$GEO_DATA" "$LON_PATH")
+                COUNTRY=$(json_get "$GEO_DATA" "$COUNTRY_PATH")
+            fi
+            if [[ -n "$LAT" && "$LAT" != "null" && "$LAT" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+                break
+            else
+                LAT="" LON="" COUNTRY=""
             fi
         done
     fi
@@ -131,14 +148,19 @@ get_location_and_config() {
         local GEO_API_URL="${API_URL_BASE}&lat=$LAT&lon=$LON"
         if fetch_data "$GEO_API_URL" > "$TEMP_FILE"; then
             local CITY_ID_LOCAL COUNTRY_LOCAL
-            CITY_ID_LOCAL=$(jq -r '.id // empty'         "$TEMP_FILE" 2>/dev/null)
-            COUNTRY_LOCAL=$(jq -r '.sys.country // empty' "$TEMP_FILE" 2>/dev/null)
+            if command -v jq &>/dev/null; then
+                CITY_ID_LOCAL=$(jq -r '.id // empty'          "$TEMP_FILE" 2>/dev/null)
+                COUNTRY_LOCAL=$(jq -r '.sys.country // empty'  "$TEMP_FILE" 2>/dev/null)
+            else
+                CITY_ID_LOCAL=$(grep -o '"id":[0-9]*' "$TEMP_FILE" | head -1 | cut -d: -f2)
+                COUNTRY_LOCAL=$(grep -o '"country":"[^"]*"' "$TEMP_FILE" | head -1 | cut -d'"' -f4)
+            fi
             if [[ -n "$CITY_ID_LOCAL" && "$CITY_ID_LOCAL" != "null" && -n "$COUNTRY_LOCAL" && "$COUNTRY_LOCAL" != "null" ]]; then
                 COUNTRY="$COUNTRY_LOCAL"
                 determine_locale "$COUNTRY"
-                update_config "CITY_ID"       "$CITY_ID_LOCAL"
-                update_config "UNIT"          "$UNIT"
-                update_config "WEATHER_LANG"  "$WEATHER_LANG"
+                update_config "CITY_ID"      "$CITY_ID_LOCAL"
+                update_config "UNIT"         "$UNIT"
+                update_config "WEATHER_LANG" "$WEATHER_LANG"
                 export CITY_ID="$CITY_ID_LOCAL"
                 return 0
             fi
@@ -153,13 +175,23 @@ if [[ -z "$CITY_ID" ]]; then
 fi
 
 API_URL="${API_URL_BASE}&id=$CITY_ID&units=$UNIT&lang=$WEATHER_LANG"
-if [[ ! -f "$CACHE_FILE" ]] || (( $(date +%s) - $(stat -c %Y "$CACHE_FILE" 2>/dev/null) > CACHE_EXPIRATION )); then
+
+if [[ ! -f "$CACHE_FILE" ]] || (( $(date +%s) - $(stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0) > CACHE_EXPIRATION )); then
     if fetch_data "$API_URL" > "$TEMP_FILE"; then
         if [[ -s "$TEMP_FILE" ]]; then
-            if jq -e '.name' "$TEMP_FILE" >/dev/null 2>&1 && ! grep -q '"cod":[4-5][0-9][0-9]' "$TEMP_FILE"; then
+            has_name=0; has_error=0
+            if command -v jq &>/dev/null; then
+                jq -e '.name' "$TEMP_FILE" >/dev/null 2>&1 && has_name=1
+                grep -q '"cod":[4-5][0-9][0-9]' "$TEMP_FILE" && has_error=1
+            else
+                grep -q '"name":"' "$TEMP_FILE" && has_name=1
+                grep -q '"cod":[4-5][0-9][0-9]' "$TEMP_FILE" && has_error=1
+            fi
+            if (( has_name && !has_error )); then
                 mv "$TEMP_FILE" "$CACHE_FILE"
             fi
         fi
     fi
 fi
+
 exit 0

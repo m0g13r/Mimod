@@ -52,8 +52,8 @@ local state = {
     last_read_tick = 0,
     cached_cover_surf = nil, last_song_id = "", last_cover_fail = 0,
     cover_w = 1, cover_h = 1,
-    last_ssid = "N/A", last_ssid_check = 0,
-    results_table = {}, last_config_check = 0,
+    last_ssid = "", last_ssid_check = 0,
+    results_table = {},
     config_cache_content = nil, config_cache_time = 0, config_cache_ttl = 30,
     parse_str_base = nil, last_parse_str = nil,
     bg_surf = nil, bg_w = 0, bg_h = 0,
@@ -135,6 +135,8 @@ local function hex_to_rgba(hex, alpha)
 end
 
 local function draw_ring(cr, x, y, radius, thickness, val, max_val, color_hex)
+    if max_val <= 0 then return end
+    val = min(max(val, 0), max_val)
     local r, g, b, a = hex_to_rgba(color_hex, bg_alpha)
     cairo_set_line_width(cr, thickness)
     cairo_arc(cr, x, y, radius, angle_0, angle_f)
@@ -190,7 +192,7 @@ local function draw_network_chart(cr, up, down, nchart, x, y, l, h)
         cairo_set_source(cr, pat_u); cairo_fill_preserve(cr); cairo_set_source_rgba(cr, ru, gu, bu, 1.0); cairo_stroke(cr)
         cairo_pattern_destroy(pat_u)
     end
-    
+
     local pat_d = cairo_pattern_create_linear(x, y, x, y+h)
     if pat_d then
         cairo_pattern_add_color_stop_rgba(pat_d, 0, rd, gd, bd, 0.8); cairo_pattern_add_color_stop_rgba(pat_d, 1, rd, gd, bd, 0.3)
@@ -273,9 +275,21 @@ local function draw_cover(cr, x, y, size)
         end
     end
     if state.cached_cover_surf then
-        if cairo_surface_status(state.cached_cover_surf) ~= CAIRO_STATUS_SUCCESS then return end
+        if cairo_surface_status(state.cached_cover_surf) ~= CAIRO_STATUS_SUCCESS then
+            cairo_surface_finish(state.cached_cover_surf)
+            cairo_surface_destroy(state.cached_cover_surf)
+            state.cached_cover_surf = nil
+            state.last_cover_fail = os.time()
+            return
+        end
         local cover_max = max(state.cover_w, state.cover_h)
-        if cover_max == 0 then return end  -- guard against corrupt/zero-dim image
+        if cover_max == 0 then
+            cairo_surface_finish(state.cached_cover_surf)
+            cairo_surface_destroy(state.cached_cover_surf)
+            state.cached_cover_surf = nil
+            state.last_cover_fail = os.time()
+            return
+        end
         local scale = size / cover_max
         cairo_save(cr)
         cairo_arc(cr, x + size/2, y + size/2, size/2, 0, two_pi); cairo_clip(cr)
@@ -283,9 +297,14 @@ local function draw_cover(cr, x, y, size)
         cairo_set_source_surface(cr, state.cached_cover_surf, x/scale + (size/scale - state.cover_w) / 2, y/scale + (size/scale - state.cover_h) / 2)
         cairo_paint_with_alpha(cr, 0.8)
         cairo_restore(cr)
-        local r, g, b = hex_to_rgba(raw_colors.PROGRESS, 1); local progress = (m.len_raw > 0) and (m.pos_raw / m.len_raw) or 0; if progress > 1 then progress = 1 end
-        cairo_set_line_width(cr, 2.5); cairo_set_source_rgba(cr, r, g, b, bg_alpha); cairo_arc(cr, x+size/2, y+size/2, size/2, 0, two_pi); cairo_stroke(cr)
-        cairo_set_source_rgba(cr, r, g, b, fg_alpha); cairo_arc(cr, x+size/2, y+size/2, size/2, -pi/2, -pi/2 + (two_pi * progress)); cairo_stroke(cr)
+        local r, g, b = hex_to_rgba(raw_colors.PROGRESS, 1)
+        local progress = (m.len_raw > 0) and (m.pos_raw / m.len_raw) or 0
+        if progress > 1 then progress = 1 end
+        cairo_set_line_width(cr, 2.5)
+        cairo_set_source_rgba(cr, r, g, b, bg_alpha)
+        cairo_arc(cr, x+size/2, y+size/2, size/2, 0, two_pi); cairo_stroke(cr)
+        cairo_set_source_rgba(cr, r, g, b, fg_alpha)
+        cairo_arc(cr, x+size/2, y+size/2, size/2, -pi/2, -pi/2 + (two_pi * progress)); cairo_stroke(cr)
     end
 end
 
@@ -308,6 +327,7 @@ local function draw_bg_image(cr)
         end
     end
     if state.bg_surf then
+        if state.bg_w == 0 or state.bg_h == 0 then return end
         cairo_save(cr)
         local target_w, target_h = 370, 775
         local x, y = 10, 40
@@ -322,42 +342,47 @@ function conky_main()
     if conky_window == nil then return end
     load_colors_from_config()
     local now = os.time()
-    
-    if not state.iface then 
+
+    if not state.iface then
         local parsed_iface = conky_parse("${template0}")
         state.iface = (parsed_iface and parsed_iface ~= "") and parsed_iface or "lo"
         state.parse_str_base = format('${upspeedf %s}|${downspeedf %s}|${acpitemp}|${fs_used_perc /}|${cpu cpu0}|${memperc}', state.iface, state.iface)
     end
-    
+
     if now > state.last_update then
         state.nchart = (state.nchart + 1) % max_history_size
-        if not state.last_parse_str then
+        if state.parse_str_base and not state.last_parse_str then
             local t = { state.parse_str_base }
-            for i = 1, 4 do 
+            for i = 1, 4 do
                 local p = state.disk_paths[i]
                 insert(t, (p and p ~= "/dev/null") and format('|${fs_used_perc %s}', p) or '|0')
             end
             state.last_parse_str = concat(t)
         end
-        local parsed = conky_parse(state.last_parse_str)
-        if parsed then
-            local i = 1
-            for k in pairs(state.results_table) do state.results_table[k] = nil end
-            for v in (parsed .. "|"):gmatch("(.-)|") do state.results_table[i] = v; i = i + 1 end
-            state.up[state.nchart], state.down[state.nchart] = safe_number(state.results_table[1], 0.1), safe_number(state.results_table[2], 0.1)
-            state.cpu_temp, state.root_perc, state.cpu_perc, state.mem_perc = safe_number(state.results_table[3], 0), safe_number(state.results_table[4], 0), safe_number(state.results_table[5], 0), safe_number(state.results_table[6], 0)
-            for j = 1, 4 do state.disk_percs[j] = safe_number(state.results_table[6+j], 0) end
+        if state.last_parse_str then
+            local parsed = conky_parse(state.last_parse_str)
+            if parsed then
+                local i = 1
+                for k in pairs(state.results_table) do state.results_table[k] = nil end
+                for v in (parsed .. "|"):gmatch("(.-)|") do state.results_table[i] = v; i = i + 1 end
+                state.up[state.nchart], state.down[state.nchart] = safe_number(state.results_table[1], 0.1), safe_number(state.results_table[2], 0.1)
+                state.cpu_temp, state.root_perc, state.cpu_perc, state.mem_perc = safe_number(state.results_table[3], 0), safe_number(state.results_table[4], 0), safe_number(state.results_table[5], 0), safe_number(state.results_table[6], 0)
+                for j = 1, 4 do state.disk_percs[j] = safe_number(state.results_table[6+j], 0) end
+            end
         end
         state.last_update = now
     end
-    
+
     if state.disk_update_counter == 0 then
         pcall(function()
             local handle = io.popen('timeout 2 ' .. base_dir .. '/scripts/get_mounts.sh')
             if handle then
                 local res = {}
-                for line in handle:lines() do insert(res, line) end
+                local ok = pcall(function()
+                    for line in handle:lines() do insert(res, line) end
+                end)
                 handle:close()
+                if not ok then return end
                 local paths_changed = false
                 for j = 1, 4 do
                     local np = res[j] or "/dev/null"
@@ -370,7 +395,7 @@ function conky_main()
         end)
     end
     state.disk_update_counter = (state.disk_update_counter + 1) % 60
-    
+
     local cs = cairo_xlib_surface_create(conky_window.display, conky_window.drawable, conky_window.visual, conky_window.width, conky_window.height)
     if cs then
         local cr = cairo_create(cs)
@@ -383,8 +408,8 @@ function conky_main()
                 draw_ring(cr, 233, 298, 30, 10, state.root_perc, 100, raw_colors.DISK)
                 local temp_pct = min(floor(state.cpu_temp / 120 * 100 + 0.5), 100)
                 draw_ring(cr, 316, 298, 30, 10, temp_pct, 100, raw_colors.TEMP)
-                for i, pt in ipairs(DISK_PTS) do 
-                    if state.disk_paths[i] ~= "/dev/null" then draw_ring(cr, pt[1], pt[2], 20, 6, state.disk_percs[i], 100, raw_colors.DISK) end 
+                for i, pt in ipairs(DISK_PTS) do
+                    if state.disk_paths[i] ~= "/dev/null" then draw_ring(cr, pt[1], pt[2], 20, 6, state.disk_percs[i], 100, raw_colors.DISK) end
                 end
                 draw_network_chart(cr, state.up, state.down, state.nchart, 220, 147, 130, 30)
                 if get_config_val("COVER_ART", "true") ~= "false" then
@@ -403,25 +428,29 @@ function conky_get_weather_data(req)
     if now - state.last_weather_check > 30 or not state.cached_weather then
         local c = read_file(weather_cache_file)
         if c then
-            state.cached_weather = { 
-                icon = c:match('"icon":"([^"]+)"'), temp = c:match('"temp":([%d%.%-]+)'), 
-                name = c:match('"name":"([^"]+)"'), desc = c:match('"description":"([^"]+)"'), 
-                wind = c:match('"speed":([%d%.]+)'), hum = c:match('"humidity":(%d+)') 
+            state.cached_weather = {
+                icon = c:match('"icon":"([^"]+)"'), temp = c:match('"temp":([%d%.%-]+)'),
+                name = c:match('"name":"([^"]+)"'), desc = c:match('"description":"([^"]+)"'),
+                wind = c:match('"speed":([%d%.]+)'), hum  = c:match('"humidity":(%d+)')
             }
             state.last_weather_check = now
         end
     end
     local d = state.cached_weather
-    if not d then return "N/A" end
-    if req == "temp" then return tostring(floor(safe_number(d.temp, 0) + 0.5))
-    elseif req == "name" then return d.name and d.name:upper() or "N/A"
-    elseif req == "desc" then return d.desc or "N/A"
-    elseif req == "wind" then return d.wind or "N/A"
-    elseif req == "humidity" then return d.hum or "N/A" end
-    return "N/A"
+    if not d then return "..." end
+    if req == "temp"     then return tostring(floor(safe_number(d.temp, 0) + 0.5))
+    elseif req == "name" then return d.name and d.name:upper() or "..."
+    elseif req == "desc" then return d.desc or "..."
+    elseif req == "wind" then return d.wind or "..."
+    elseif req == "humidity" then return d.hum or "..." end
+    return "..."
 end
 
-function conky_weather_icon() return WEATHER_ICONS[state.cached_weather and state.cached_weather.icon or "01d"] or "" end
+function conky_weather_icon()
+    local d = state.cached_weather
+    return WEATHER_ICONS[(d and d.icon) or "01d"] or ""
+end
+
 local function get_unit_setting()
     local now = os.time()
     if not state.unit_cache or now - state.unit_cache_time >= state.config_cache_ttl then
@@ -439,6 +468,7 @@ function conky_playerctl_status() return PLAYER_ICONS[conky_get_music_info("stat
 function conky_playerctl_status_text() local s = conky_get_music_info("status"); return (s == "None" or s == "") and "No Player" or s end
 function conky_disk_name(idx) return state.disk_names[tonumber(idx)] or "N/A" end
 function conky_disk_perc(idx) return state.disk_percs[tonumber(idx)] or 0 end
+
 function conky_cpu_temp()
     local now = os.time()
     if not state.cpu_unit_cache or now - state.cpu_unit_cache_time >= state.config_cache_ttl then
@@ -446,22 +476,24 @@ function conky_cpu_temp()
         state.cpu_unit_cache = (override ~= "") and ((override:upper() == "F") and "imperial" or "metric") or get_unit_setting()
         state.cpu_unit_cache_time = now
     end
-    local val = state.cpu_temp
-    local unit = (state.cpu_unit_cache == "imperial" and "°F" or "°C")
+    local val  = state.cpu_temp
+    local unit = (state.cpu_unit_cache == "imperial") and "°F" or "°C"
     return (unit == "°F" and floor((val * 9 / 5) + 32) or floor(val)) .. unit
 end
 
 function conky_get_ssid(fallback)
-    if not state.iface then return fallback or "N/A" end
     local now = os.time()
-    if now - state.last_ssid_check > 60 then
-        local sn = conky_parse('${wireless_essid ' .. fallback .. '}')
-        state.last_ssid = (sn and sn ~= "" and sn ~= "off" and sn ~= "N/A") and truncate(sn, 10) or fallback
+    if state.iface and now - state.last_ssid_check > 60 then
+        if state.iface:sub(1, 1) == 'w' then
+            local sn = conky_parse('${wireless_essid ' .. fallback .. '}')
+            state.last_ssid = (sn and sn ~= "" and sn ~= "off" and sn ~= "N/A") and truncate(sn, 10) or fallback
+        else
+            state.last_ssid = fallback
+        end
         state.last_ssid_check = now
     end
-    return state.last_ssid
+    return (state.last_ssid ~= "") and state.last_ssid or (fallback or "N/A")
 end
-
 
 function conky_shutdown()
     if state.bg_surf then

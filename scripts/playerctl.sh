@@ -21,10 +21,12 @@ fi
 COVER_ART="${COVER_ART:-true}"
 
 _TV_FOUND_DIR=""
-_TV_XARGS_PID=""
+_TV_WORKER_PIDS=()
 
 _cleanup() {
-    [[ -n "$_TV_XARGS_PID" ]] && kill -- "-$_TV_XARGS_PID" 2>/dev/null
+    for pid in "${_TV_WORKER_PIDS[@]}"; do
+        kill "$pid" 2>/dev/null
+    done
     [[ -n "$_TV_FOUND_DIR" && -d "$_TV_FOUND_DIR" ]] && rm -rf "$_TV_FOUND_DIR"
     rm -f "/dev/shm/temp_cover_raw"
     exec 9>&-
@@ -119,7 +121,9 @@ perform_download() {
 
 download_itunes_cover() {
     local search_query
-    if [[ -z "$1" ]]; then search_query=$(url_safe_encode "$2"); elif [[ "$2" == *"$1"* ]]; then search_query=$(url_safe_encode "$2"); else search_query=$(url_safe_encode "$1 $2"); fi
+    if [[ -z "$1" ]]; then search_query=$(url_safe_encode "$2")
+    elif [[ "$2" == *"$1"* ]]; then search_query=$(url_safe_encode "$2")
+    else search_query=$(url_safe_encode "$1 $2"); fi
     search_query="${search_query//%20/+}"
     local cover_url
     cover_url=$(curl -s --max-time 2 -A "$USER_AGENT" \
@@ -131,7 +135,9 @@ download_itunes_cover() {
 
 download_deezer_cover() {
     local search_query
-    if [[ -z "$1" ]]; then search_query=$(url_safe_encode "$2"); elif [[ "$2" == *"$1"* ]]; then search_query=$(url_safe_encode "$2"); else search_query=$(url_safe_encode "$1 $2"); fi
+    if [[ -z "$1" ]]; then search_query=$(url_safe_encode "$2")
+    elif [[ "$2" == *"$1"* ]]; then search_query=$(url_safe_encode "$2")
+    else search_query=$(url_safe_encode "$1 $2"); fi
     local cover_url
     cover_url=$(curl -s --max-time 2 -A "$USER_AGENT" \
         "https://api.deezer.com/search?q=$search_query" \
@@ -161,22 +167,24 @@ download_universal_tv_logo() {
     slug_under=$(echo "$slug_raw" | sed -E 's/[^a-z0-9]+/_/g; s/^_|_$//g')
     slug_vavoo=$(echo "$query" | sed 's/ /%20/g')
     slug_joyn=$(echo "$query" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]//g')
+
     local tv_country="germany"
     if [[ -f "$HOME/.cache/weather.json" ]]; then
         local cc
         cc=$(jq -r '.sys.country // empty' "$HOME/.cache/weather.json" 2>/dev/null | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
         case "$cc" in
-            AT) tv_country="austria" ;;
+            AT) tv_country="austria"     ;;
             CH) tv_country="switzerland" ;;
-            FR) tv_country="france" ;;
-            IT) tv_country="italy" ;;
-            ES) tv_country="spain" ;;
+            FR) tv_country="france"      ;;
+            IT) tv_country="italy"       ;;
+            ES) tv_country="spain"       ;;
             NL) tv_country="netherlands" ;;
-            PL) tv_country="poland" ;;
-            GB|UK) tv_country="uk" ;;
-            *) tv_country="germany" ;;
+            PL) tv_country="poland"      ;;
+            GB|UK) tv_country="uk"       ;;
+            *) tv_country="germany"      ;;
         esac
     fi
+
     local repos=(
         "https://raw.githubusercontent.com/cytec/tvlogos/master"
         "https://raw.githubusercontent.com/Jasmeet181/mediaportal-de-logos/master/Logos"
@@ -186,6 +194,7 @@ download_universal_tv_logo() {
         "https://raw.githubusercontent.com/jnk22/kodinerds-iptv/master/logos/tv"
         "https://raw.githubusercontent.com/waipu/waipu-logos/master/logos"
     )
+
     local candidates=()
     for s in "$slug_dash" "$slug_none" "$slug_under"; do
         [[ -z "$s" ]] && continue
@@ -199,6 +208,7 @@ download_universal_tv_logo() {
     fi
     local unique_candidates
     unique_candidates=$(printf "%s\n" "${candidates[@]}" | sort -u)
+
     local all_urls=()
     all_urls+=("https://www.joyn.de/logos/v1/channel/$slug_joyn.png")
     all_urls+=("https://raw.githubusercontent.com/michaz80/vavoo-logos/master/icons/$slug_vavoo.png")
@@ -215,27 +225,40 @@ download_universal_tv_logo() {
     _TV_FOUND_DIR="$found_dir"
     local url_file="$found_dir/urls.txt"
     printf "%s\n" "${all_urls[@]}" | awk '!seen[$0]++' > "$url_file"
-    export USER_AGENT
+    _TV_WORKER_PIDS=()
+    local found_flag="$found_dir/found.txt"
 
-    setsid xargs -P 15 -n 1 -I URL bash -c "
-        [[ -s '$found_dir/found.txt' ]] && exit 0
-        code=\$(curl -s -o /dev/null -I -w '%{http_code}' -L --max-time 3 -A '$USER_AGENT' 'URL')
-        [[ \"\$code\" == 200 ]] && echo 'URL' >> '$found_dir/found.txt'
-    " < "$url_file" 2>/dev/null &
-    _TV_XARGS_PID=$!
-
-    while kill -0 "$_TV_XARGS_PID" 2>/dev/null; do
-        if [[ -s "$found_dir/found.txt" ]]; then
-            kill -- "-$_TV_XARGS_PID" 2>/dev/null
-            break
+    while IFS= read -r url; do
+        (
+            [[ -s "$found_flag" ]] && exit 0
+            code=$(curl -s -o /dev/null -I -w '%{http_code}' -L \
+                --max-time 3 -A "$USER_AGENT" "$url" 2>/dev/null)
+            [[ "$code" == "200" ]] && echo "$url" >> "$found_flag"
+        ) &
+        _TV_WORKER_PIDS+=($!)
+        if (( ${#_TV_WORKER_PIDS[@]} % 15 == 0 )); then
+            wait -n 2>/dev/null || true
         fi
+    done < "$url_file"
+
+    while true; do
+        [[ -s "$found_flag" ]] && break
+        local running=0
+        for pid in "${_TV_WORKER_PIDS[@]}"; do
+            kill -0 "$pid" 2>/dev/null && running=1 && break
+        done
+        (( running == 0 )) && break
         sleep 0.15
     done
-    wait "$_TV_XARGS_PID" 2>/dev/null
-    _TV_XARGS_PID=""
+
+    for pid in "${_TV_WORKER_PIDS[@]}"; do
+        kill "$pid" 2>/dev/null
+    done
+    wait "${_TV_WORKER_PIDS[@]}" 2>/dev/null
+    _TV_WORKER_PIDS=()
 
     local success_url=""
-    [[ -s "$found_dir/found.txt" ]] && success_url=$(head -n 1 "$found_dir/found.txt")
+    [[ -s "$found_flag" ]] && success_url=$(head -n 1 "$found_flag")
     rm -rf "$found_dir"
     _TV_FOUND_DIR=""
 
@@ -252,7 +275,7 @@ main() {
     DATA=$(timeout 0.9 playerctl metadata \
         --format "{{xesam:artist}}${delim}{{xesam:title}}${delim}{{status}}${delim}{{mpris:artUrl}}${delim}{{duration(position)}}${delim}{{position}}${delim}{{mpris:length}}${delim}{{playerName}}" \
         2>/dev/null)
-    
+
     if [[ -z "$DATA" ]]; then
         if ! playerctl status &>/dev/null; then
             if [[ -f "$CACHE_FILE" ]]; then
@@ -263,12 +286,12 @@ main() {
         fi
         return 0
     fi
-    
+
     local ARTIST TITLE STATUS ART_URL POS RAW_POS RAW_LEN PLAYER
     IFS="$delim" read -r ARTIST TITLE STATUS ART_URL POS RAW_POS RAW_LEN PLAYER <<< "$DATA"
-    
+
     [[ -z "$STATUS" ]] && STATUS="Unknown"
-    
+
     if [[ -z "$ARTIST" || "$ARTIST" == "null" ]]; then
         if [[ "$TITLE" == *" - "* ]]; then
             ARTIST="${TITLE%% - *}"
@@ -278,8 +301,8 @@ main() {
 
     local is_tv=0
     if [[ "$PLAYER" == *"vlc"* || "$PLAYER" == *"mpv"* || "$PLAYER" == *"chromium"* || "$PLAYER" == *"firefox"* ]]; then
-        if [[ "$TITLE" == *"Joyn"* || "$ARTIST" == *"Joyn"* ]]; then is_tv=1;
-        elif [[ "$TITLE" == *"Vavoo"* || "$ARTIST" == *"Vavoo"* ]]; then is_tv=2;
+        if [[ "$TITLE" == *"Joyn"* || "$ARTIST" == *"Joyn"* ]]; then is_tv=1
+        elif [[ "$TITLE" == *"Vavoo"* || "$ARTIST" == *"Vavoo"* ]]; then is_tv=2
         else is_tv=3; fi
     fi
 
@@ -295,7 +318,7 @@ main() {
     local CUR_SONG="$ARTIST|$TITLE|$STATUS"
     local LAST_SONG
     [[ -f "$CACHE_FILE" ]] && LAST_SONG=$(cat "$CACHE_FILE")
-    
+
     if [[ "$LAST_SONG" != "$CUR_SONG" ]]; then
         if [[ "$COVER_ART" == "true" && $HAS_MAGICK -eq 1 ]]; then
             local success=0
@@ -309,8 +332,8 @@ main() {
                 download_universal_tv_logo "$tv_title" "pad" && success=1
             fi
             if [[ $success -eq 0 ]]; then
-                download_deezer_cover      "$ARTIST" "$TITLE" && success=1
-                [[ $success -eq 0 ]] && download_itunes_cover     "$ARTIST" "$TITLE" && success=1
+                download_deezer_cover       "$ARTIST" "$TITLE" && success=1
+                [[ $success -eq 0 ]] && download_itunes_cover      "$ARTIST" "$TITLE" && success=1
                 [[ $success -eq 0 ]] && download_musicbrainz_cover "$ARTIST" "$TITLE" && success=1
             fi
             [[ $success -eq 0 && -f "$PLACEHOLDER" ]] && make_cover_round_smart "$PLACEHOLDER" "$COVER_FILE" "crop"
