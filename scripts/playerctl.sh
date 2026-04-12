@@ -203,8 +203,13 @@ download_universal_tv_logo() {
     local tv_country="germany"
     if [[ -f "$HOME/.cache/weather.json" ]]; then
         local cc
-        cc=$(jq -r '.sys.country // empty' "$HOME/.cache/weather.json" 2>/dev/null \
-            | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+        if command -v jq &>/dev/null; then
+            cc=$(jq -r '.sys.country // empty' "$HOME/.cache/weather.json" 2>/dev/null \
+                | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+        else
+            cc=$(grep -o '"country":"[^"]*"' "$HOME/.cache/weather.json" 2>/dev/null \
+                | head -1 | cut -d'"' -f4 | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+        fi
         case "$cc" in
             AT) tv_country="austria"     ;;
             CH) tv_country="switzerland" ;;
@@ -262,9 +267,20 @@ download_universal_tv_logo() {
 
     _TV_WORKER_PIDS=()
     local found_flag="$found_dir/found.txt"
-    local spawn_count=0
+    local MAX_CONCURRENT=8
 
     while IFS= read -r url; do
+        [[ -s "$found_flag" ]] && break
+        while true; do
+            local alive=()
+            for pid in "${_TV_WORKER_PIDS[@]}"; do
+                kill -0 "$pid" 2>/dev/null && alive+=("$pid")
+            done
+            _TV_WORKER_PIDS=("${alive[@]}")
+            (( ${#_TV_WORKER_PIDS[@]} < MAX_CONCURRENT )) && break
+            wait -n 2>/dev/null || true
+        done
+
         [[ -s "$found_flag" ]] && break
 
         (
@@ -278,29 +294,19 @@ download_universal_tv_logo() {
             fi
         ) &
         _TV_WORKER_PIDS+=($!)
-        (( spawn_count++ ))
-
-        if (( spawn_count % 15 == 0 )); then
-            local alive=()
-            for pid in "${_TV_WORKER_PIDS[@]}"; do
-                kill -0 "$pid" 2>/dev/null && alive+=("$pid")
-            done
-            _TV_WORKER_PIDS=("${alive[@]}")
-            wait -n 2>/dev/null || true
-        fi
     done < "$url_file"
 
-    while true; do
-        [[ -s "$found_flag" ]] && break
-        local running=0
+    while [[ ! -s "$found_flag" ]]; do
+        local alive=()
         for pid in "${_TV_WORKER_PIDS[@]}"; do
-            kill -0 "$pid" 2>/dev/null && running=1 && break
+            kill -0 "$pid" 2>/dev/null && alive+=("$pid")
         done
-        (( running == 0 )) && break
-        sleep 0.15
+        _TV_WORKER_PIDS=("${alive[@]}")
+        [[ ${#_TV_WORKER_PIDS[@]} -eq 0 ]] && break
+        wait -n 2>/dev/null || true
     done
 
-    for pid in "${_TV_WORKER_PIDS[@]}"; do kill "$pid" 2>/dev/null; done
+    for pid in "${_TV_WORKER_PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
     [[ ${#_TV_WORKER_PIDS[@]} -gt 0 ]] && wait "${_TV_WORKER_PIDS[@]}" 2>/dev/null
     _TV_WORKER_PIDS=()
 
@@ -326,7 +332,7 @@ main() {
     local RAW_CACHE_FILE="/dev/shm/current_song_raw.txt"
 
     if [[ -z "$DATA" ]]; then
-        if ! playerctl status &>/dev/null; then
+        if ! timeout 0.5 playerctl status &>/dev/null; then
             if [[ -f "$CACHE_FILE" ]]; then
                 [[ "$COVER_ART" == "true" && $HAS_MAGICK -eq 1 && -f "$PLACEHOLDER" ]] && \
                     make_cover_round_smart "$PLACEHOLDER" "$COVER_FILE" "crop"
@@ -355,6 +361,7 @@ main() {
         return 0
     fi
     printf "%s" "$RAW_SONG" > "${RAW_CACHE_FILE}"
+    local RAW_TITLE_FOR_TV="$TITLE"
 
     if [[ -z "$ARTIST" || "$ARTIST" == "null" ]]; then
         if [[ "$TITLE" == *" - "* ]]; then
@@ -370,8 +377,6 @@ main() {
         elif [[ "$TITLE" == *"Vavoo"* || "$ARTIST" == *"Vavoo"* ]]; then is_tv=2
         else is_tv=3; fi
     fi
-
-    local RAW_TITLE_FOR_TV="$TITLE"
 
     ARTIST=$(clean_yt_title "$ARTIST")
     TITLE=$(clean_yt_title "$TITLE")

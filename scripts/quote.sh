@@ -68,6 +68,7 @@ fetch_and_save() {
             "RANDOMQUOTE") SRC_ACTUAL="ZENQUOTES"   ;;
             "ZENQUOTES")   SRC_ACTUAL="QUOTESLATE"  ;;
             "QUOTESLATE")  SRC_ACTUAL="QUOTABLE"    ;;
+            "QUOTABLE")    SRC_ACTUAL="BRAINYQUOTE" ;;
             *)             SRC_ACTUAL="BRAINYQUOTE" ;;
         esac
     fi

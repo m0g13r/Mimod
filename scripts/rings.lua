@@ -66,10 +66,12 @@ local state = {
     last_colors_check = 0,
     last_bg_name = "",
     cpu_unit_cache = nil, cpu_unit_cache_time = 0,
+    thermal_zone_path = nil, thermal_zone_checked = false,
 }
 for i = 0, max_history_size_minus_1 do state.up[i] = 0.1; state.down[i] = 0.1 end
 local rgba_cache = {}
-
+local rgba_cache_count = 0
+local RGBA_CACHE_MAX = 512
 local function _release_surf(s)
     if s then
         cairo_surface_finish(s)
@@ -139,17 +141,23 @@ local function load_colors_from_config(now)
     raw_colors.TEXT     = parse_color(get_config_val("COLOR_TEXT",     "", now), color_defaults.TEXT)
     raw_colors.PROGRESS = parse_color(get_config_val("COLOR_PROGRESS", "", now), color_defaults.PROGRESS)
     rgba_cache = {}
+    rgba_cache_count = 0
 end
 
 local function hex_to_rgba(hex, alpha)
     local key = hex * 1024 + floor(alpha * 1023 + 0.5)
     local c = rgba_cache[key]
     if c then return c[1], c[2], c[3], c[4] end
+    if rgba_cache_count >= RGBA_CACHE_MAX then
+        rgba_cache = {}
+        rgba_cache_count = 0
+    end
     local r = (floor(hex / 65536) % 256) / 255.0
     local g = (floor(hex / 256)   % 256) / 255.0
     local b = (          hex       % 256) / 255.0
     c = {r, g, b, alpha}
     rgba_cache[key] = c
+    rgba_cache_count = rgba_cache_count + 1
     return r, g, b, alpha
 end
 
@@ -350,6 +358,16 @@ local function draw_bg_image(cr, now)
     end
 end
 
+local function rebuild_parse_str_if_needed()
+    if not (state.parse_str_base and not state.last_parse_str) then return end
+    local t = { state.parse_str_base }
+    for i = 1, 4 do
+        local p = state.disk_paths[i]
+        insert(t, (p and p ~= "/dev/null") and format('|${fs_used_perc %s}', p) or '|0')
+    end
+    state.last_parse_str = concat(t)
+end
+
 function conky_main()
     if conky_window == nil then return end
     local now = os.time()
@@ -362,16 +380,10 @@ function conky_main()
         state.parse_str_base = format('${upspeedf %s}|${downspeedf %s}|${acpitemp}|${fs_used_perc /}|${cpu cpu0}|${memperc}', state.iface, state.iface)
     end
 
+    rebuild_parse_str_if_needed()
+
     if now > state.last_update then
         state.nchart = (state.nchart + 1) % max_history_size
-        if state.parse_str_base and not state.last_parse_str then
-            local t = { state.parse_str_base }
-            for i = 1, 4 do
-                local p = state.disk_paths[i]
-                insert(t, (p and p ~= "/dev/null") and format('|${fs_used_perc %s}', p) or '|0')
-            end
-            state.last_parse_str = concat(t)
-        end
         if state.last_parse_str then
             local parsed = conky_parse(state.last_parse_str)
             if parsed then
@@ -380,15 +392,44 @@ function conky_main()
                 local i = 1
                 for v in (parsed .. "|"):gmatch("(.-)|") do rt[i] = v; i = i + 1 end
                 state.up[state.nchart], state.down[state.nchart] = safe_number(rt[1], 0.1), safe_number(rt[2], 0.1)
-                state.cpu_temp, state.root_perc, state.cpu_perc, state.mem_perc = safe_number(rt[3], 0), safe_number(rt[4], 0), safe_number(rt[5], 0), safe_number(rt[6], 0)
+                local raw_temp = safe_number(rt[3], 0)
+                state.root_perc, state.cpu_perc, state.mem_perc = safe_number(rt[4], 0), safe_number(rt[5], 0), safe_number(rt[6], 0)
                 for j = 1, 4 do state.disk_percs[j] = safe_number(rt[6+j], 0) end
+
+                if raw_temp > 0 then
+                    state.cpu_temp = raw_temp
+                else
+                    if not state.thermal_zone_checked then
+                        state.thermal_zone_checked = true
+                        for zi = 0, 9 do
+                            local p = "/sys/class/thermal/thermal_zone" .. zi .. "/temp"
+                            local tf = io.open(p, "r")
+                            if tf then
+                                local v = tf:read("*l"); tf:close()
+                                local n = tonumber(v)
+                                if n and n >= 1000 and n <= 150000 then
+                                    state.thermal_zone_path = p
+                                    break
+                                end
+                            end
+                        end
+                    end
+                    if state.thermal_zone_path then
+                        local tf = io.open(state.thermal_zone_path, "r")
+                        if tf then
+                            local v = tf:read("*l"); tf:close()
+                            local n = tonumber(v)
+                            if n then state.cpu_temp = n / 1000 end
+                        end
+                    end
+                end
             end
         end
         state.last_update = now
     end
 
     if state.disk_update_counter == 0 then
-        os.execute('timeout 2 ' .. base_dir .. '/scripts/get_mounts.sh > /dev/shm/mimod_mounts.txt 2>/dev/null &')
+        os.execute('timeout 2 ' .. base_dir .. '/scripts/get_mounts.sh > /dev/shm/mimod_mounts.tmp 2>/dev/null && mv -f /dev/shm/mimod_mounts.tmp /dev/shm/mimod_mounts.txt 2>/dev/null &')
     end
     if state.disk_update_counter == 2 then
         local f = io.open('/dev/shm/mimod_mounts.txt', 'r')
@@ -494,8 +535,9 @@ function conky_cpu_temp()
 end
 
 function conky_get_ssid(fallback)
+    if not state.iface then return fallback or "N/A" end
     local now = _frame_now > 0 and _frame_now or os.time()
-    if state.iface and now - state.last_ssid_check > 60 then
+    if now - state.last_ssid_check > 60 then
         if state.iface:sub(1, 1) == 'w' then
             local sn = conky_parse('${wireless_essid ' .. fallback .. '}') or ""
             state.last_ssid = (sn ~= "" and sn ~= "off" and sn ~= "N/A") and truncate(sn, 10) or fallback
@@ -508,11 +550,19 @@ function conky_get_ssid(fallback)
 end
 
 function conky_shutdown()
-    _release_surf(state.bg_surf);          state.bg_surf          = nil
+    _release_surf(state.bg_surf);           state.bg_surf           = nil
     _release_surf(state.cached_cover_surf); state.cached_cover_surf = nil
-    rgba_cache = {}
-    state.results_table = {}
+    rgba_cache       = {}
+    rgba_cache_count = 0
+    state.results_table       = {}
     state.config_cache_content = nil
-    state.cached_weather = nil
+    state.cached_weather       = nil
+    state.cached_music = {artist="", title="", status="", position="", pos_raw=0, len_raw=0}
+    state.thermal_zone_path    = nil
+    state.thermal_zone_checked = false
+    state.last_parse_str       = nil
+    state.iface                = nil
+    state.unit_cache           = nil
+    state.cpu_unit_cache       = nil
     collectgarbage("collect")
 end
