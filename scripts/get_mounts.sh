@@ -1,6 +1,6 @@
 #!/bin/bash
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-source "$SCRIPT_DIR/config" 2>/dev/null || true
+source "$SCRIPT_DIR/config" 2>/dev/null
 PATHS=()
 NAMES=()
 for i in 1 2 3 4; do
@@ -29,7 +29,8 @@ if (( ${#PATHS[@]} < 4 )); then
     fi
     for mnt in "${MOUNT_LIST[@]}"; do
         PATHS+=("$mnt")
-        NAMES+=("${mnt##*/}")
+        local_name="${mnt##*/}"
+        NAMES+=("${local_name:-mnt}")
     done
 fi
 while (( ${#PATHS[@]} < 4 )); do

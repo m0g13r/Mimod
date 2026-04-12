@@ -114,6 +114,8 @@ determine_locale() {
     export WEATHER_LANG UNIT
 }
 
+_valid_coord_re='^-?[0-9]+(\.[0-9]+)?$'
+
 get_location_and_config() {
     local LAT="" LON="" COUNTRY=""
 
@@ -154,7 +156,8 @@ get_location_and_config() {
                 LON=$(json_get "$GEO_DATA" "$LON_PATH")
                 COUNTRY=$(json_get "$GEO_DATA" "$COUNTRY_PATH")
             fi
-            if [[ -n "$LAT" && "$LAT" != "null" && "$LAT" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+            if [[ -n "$LAT" && "$LAT" != "null" && "$LAT" =~ $_valid_coord_re ]] &&
+               [[ -n "$LON" && "$LON" != "null" && "$LON" =~ $_valid_coord_re ]]; then
                 break
             else
                 LAT="" LON="" COUNTRY=""
@@ -192,6 +195,20 @@ get_location_and_config() {
 
 if [[ -z "$CITY_ID" ]]; then
     get_location_and_config
+    if [[ -n "$CITY_ID" && -s "$TEMP_FILE" ]]; then
+        has_name=0
+        has_error=0
+        if command -v jq &>/dev/null; then
+            jq -e '.name' "$TEMP_FILE" >/dev/null 2>&1   && has_name=1
+        else
+            grep -q '"name":"' "$TEMP_FILE"               && has_name=1
+        fi
+        grep -q '"cod":[4-5][0-9][0-9]' "$TEMP_FILE"     && has_error=1
+        if (( has_name && !has_error )); then
+            mv -f "$TEMP_FILE" "$CACHE_FILE"
+        fi
+    fi
+
     exit 0
 fi
 

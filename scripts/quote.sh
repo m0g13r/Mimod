@@ -56,6 +56,8 @@ format_output() {
 }
 
 fetch_and_save() {
+    trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+
     local SRC_ACTUAL="$QUOTE_SOURCE"
 
     if [[ "$QUOTE_SOURCE" == "ROUNDROBIN" ]]; then
@@ -65,6 +67,7 @@ fetch_and_save() {
             "BRAINYQUOTE") SRC_ACTUAL="RANDOMQUOTE" ;;
             "RANDOMQUOTE") SRC_ACTUAL="ZENQUOTES"   ;;
             "ZENQUOTES")   SRC_ACTUAL="QUOTESLATE"  ;;
+            "QUOTESLATE")  SRC_ACTUAL="QUOTABLE"    ;;
             *)             SRC_ACTUAL="BRAINYQUOTE" ;;
         esac
     fi
@@ -91,6 +94,10 @@ fetch_and_save() {
             RAW=$(fetch_url "https://quoteslate.ir/api/quotes/random" \
                 | jq -r '.quote // empty' 2>/dev/null)
             ;;
+        "QUOTABLE")
+            RAW=$(fetch_url "https://api.quotable.io/random" \
+                | jq -r '.content // empty' 2>/dev/null)
+            ;;
         *)
             RAW=$(fetch_url "https://zenquotes.io/api/random" \
                 | jq -r '.[0].q // empty' 2>/dev/null)
@@ -114,8 +121,6 @@ fetch_and_save() {
         format_output "$FINAL" > "$tmp_render" && \
             mv -f "$tmp_render" "$RENDER_FILE"
     fi
-
-    rmdir "$LOCK_DIR" 2>/dev/null
 }
 
 _maybe_clear_stale_lock() {
@@ -134,7 +139,8 @@ _maybe_clear_stale_lock() {
 }
 
 main() {
-    if ! command -v trans &>/dev/null; then
+    local lang="${WEATHER_LANG:-de}"
+    if [[ "$lang" != "en" ]] && ! command -v trans &>/dev/null; then
         if [[ -f "$RENDER_FILE" ]]; then
             cat "$RENDER_FILE"
         elif [[ -f "$CACHE_FILE" ]]; then

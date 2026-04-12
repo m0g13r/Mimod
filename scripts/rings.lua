@@ -12,7 +12,9 @@ local format = string.format
 local insert = table.insert
 local concat = table.concat
 
-local CAIRO_STATUS_SUCCESS = 0
+local CAIRO_STATUS_SUCCESS     = 0
+local CAIRO_FONT_SLANT_NORMAL  = 0
+local CAIRO_FONT_WEIGHT_NORMAL = 0
 
 local color_defaults = {
     CPU     = 0x268BA0, MEM  = 0x60C9C5,
@@ -42,6 +44,8 @@ local DISK_PTS = { { 56, 443 }, { 137, 443 }, { 56, 523 }, { 137, 523 } }
 local WEATHER_ICONS = {["01d"]="",["01n"]="",["02d"]="",["02n"]="",["03d"]="",["03n"]="",["04d"]="",["04n"]="",["09d"]="",["09n"]="",["10d"]="",["10n"]="",["11d"]="",["11n"]="",["13d"]="",["13n"]="",["50d"]="",["50n"]=""}
 local PLAYER_ICONS = {["Stopped"]="", ["Playing"]="", ["Paused"]="", ["Unknown"]="", ["None"]=""}
 
+local _frame_now = 0
+
 local state = {
     up = {}, down = {}, nchart = 0, last_update = 0, disk_update_counter = 0,
     disk_paths = {"/dev/null", "/dev/null", "/dev/null", "/dev/null"},
@@ -66,6 +70,13 @@ local state = {
 for i = 0, max_history_size_minus_1 do state.up[i] = 0.1; state.down[i] = 0.1 end
 local rgba_cache = {}
 
+local function _release_surf(s)
+    if s then
+        cairo_surface_finish(s)
+        cairo_surface_destroy(s)
+    end
+end
+
 local function read_file(path)
     local f = io.open(path, "r")
     if not f then return nil end
@@ -74,8 +85,7 @@ local function read_file(path)
     return content
 end
 
-local function read_config_cached()
-    local now = os.time()
+local function read_config_cached(now)
     if state.config_cache_content and (now - state.config_cache_time) < state.config_cache_ttl then
         return state.config_cache_content
     end
@@ -84,8 +94,8 @@ local function read_config_cached()
     return content or state.config_cache_content or ""
 end
 
-local function get_config_val(key, default)
-    local content = read_config_cached()
+local function get_config_val(key, default, now)
+    local content = read_config_cached(now or os.time())
     if content then
         local pattern = key .. '=["\']?([^"\'\n]+)["\']?'
         return content:match(pattern) or default
@@ -117,18 +127,17 @@ local function parse_color(s, fallback)
     return n or fallback
 end
 
-local function load_colors_from_config()
-    local now = os.time()
+local function load_colors_from_config(now)
     if now - state.last_colors_check < state.config_cache_ttl then return end
     state.last_colors_check = now
-    raw_colors.CPU      = parse_color(get_config_val("COLOR_CPU",      ""), color_defaults.CPU)
-    raw_colors.MEM      = parse_color(get_config_val("COLOR_MEM",      ""), color_defaults.MEM)
-    raw_colors.TEMP     = parse_color(get_config_val("COLOR_TEMP",     ""), color_defaults.TEMP)
-    raw_colors.DISK     = parse_color(get_config_val("COLOR_DISK",     ""), color_defaults.DISK)
-    raw_colors.NET_UP   = parse_color(get_config_val("COLOR_NET_UP",   ""), color_defaults.NET_UP)
-    raw_colors.NET_DOWN = parse_color(get_config_val("COLOR_NET_DOWN", ""), color_defaults.NET_DOWN)
-    raw_colors.TEXT     = parse_color(get_config_val("COLOR_TEXT",     ""), color_defaults.TEXT)
-    raw_colors.PROGRESS = parse_color(get_config_val("COLOR_PROGRESS", ""), color_defaults.PROGRESS)
+    raw_colors.CPU      = parse_color(get_config_val("COLOR_CPU",      "", now), color_defaults.CPU)
+    raw_colors.MEM      = parse_color(get_config_val("COLOR_MEM",      "", now), color_defaults.MEM)
+    raw_colors.TEMP     = parse_color(get_config_val("COLOR_TEMP",     "", now), color_defaults.TEMP)
+    raw_colors.DISK     = parse_color(get_config_val("COLOR_DISK",     "", now), color_defaults.DISK)
+    raw_colors.NET_UP   = parse_color(get_config_val("COLOR_NET_UP",   "", now), color_defaults.NET_UP)
+    raw_colors.NET_DOWN = parse_color(get_config_val("COLOR_NET_DOWN", "", now), color_defaults.NET_DOWN)
+    raw_colors.TEXT     = parse_color(get_config_val("COLOR_TEXT",     "", now), color_defaults.TEXT)
+    raw_colors.PROGRESS = parse_color(get_config_val("COLOR_PROGRESS", "", now), color_defaults.PROGRESS)
     rgba_cache = {}
 end
 
@@ -193,7 +202,9 @@ local function draw_network_chart(cr, up, down, nchart, x, y, l, h)
         if down[i] > md then md = down[i] end
     end
     local ru, gu, bu = hex_to_rgba(raw_colors.NET_UP, 1); local rd, gd, bd = hex_to_rgba(raw_colors.NET_DOWN, 1)
-    cairo_set_line_width(cr, 1.2); cairo_set_font_size(cr, 6)
+    cairo_set_line_width(cr, 1.2)
+    cairo_select_font_face(cr, "sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL)
+    cairo_set_font_size(cr, 6)
 
     local pat_u = cairo_pattern_create_linear(x, y-h, x, y)
     if pat_u then
@@ -214,7 +225,7 @@ local function draw_network_chart(cr, up, down, nchart, x, y, l, h)
 end
 
 function conky_get_music_info(info_type)
-    local now = os.time()
+    local now = _frame_now > 0 and _frame_now or os.time()
     if now - state.last_read_tick >= 1 then
         state.last_read_tick = now
         local content = read_file(music_cache_file)
@@ -248,15 +259,12 @@ function conky_get_music_info(info_type)
 end
 
 local function clear_cover()
-    if state.cached_cover_surf then
-        cairo_surface_finish(state.cached_cover_surf)
-        cairo_surface_destroy(state.cached_cover_surf)
-        state.cached_cover_surf = nil
-    end
+    _release_surf(state.cached_cover_surf)
+    state.cached_cover_surf = nil
     state.last_song_id = ""
 end
 
-local function draw_cover(cr, x, y, size)
+local function draw_cover(cr, x, y, size, now)
     local m = state.cached_music
     if m.status == "None" or m.status == "" or m.status == "Stopped" then
         if state.cached_cover_surf or state.last_song_id ~= "" then clear_cover() end
@@ -265,39 +273,33 @@ local function draw_cover(cr, x, y, size)
     local cur_id = m.artist .. m.title
     if cur_id == "" then clear_cover(); return end
     if cur_id ~= state.last_song_id then
-        if state.cached_cover_surf then
-            cairo_surface_finish(state.cached_cover_surf)
-            cairo_surface_destroy(state.cached_cover_surf)
-        end
+        _release_surf(state.cached_cover_surf)
         state.cached_cover_surf = nil
         state.last_cover_fail = 0
         state.last_song_id = cur_id
     end
-    if not state.cached_cover_surf and (os.time() - state.last_cover_fail) >= 5 then
+    if not state.cached_cover_surf and (now - state.last_cover_fail) >= 5 then
         local new_surf = cairo_image_surface_create_from_png("/dev/shm/cover.png")
         if cairo_surface_status(new_surf) == CAIRO_STATUS_SUCCESS then
             state.cached_cover_surf = new_surf
             state.cover_w, state.cover_h = cairo_image_surface_get_width(new_surf), cairo_image_surface_get_height(new_surf)
         else
-            cairo_surface_finish(new_surf)
-            cairo_surface_destroy(new_surf)
-            state.last_cover_fail = os.time()
+            _release_surf(new_surf)
+            state.last_cover_fail = now
         end
     end
     if state.cached_cover_surf then
         if cairo_surface_status(state.cached_cover_surf) ~= CAIRO_STATUS_SUCCESS then
-            cairo_surface_finish(state.cached_cover_surf)
-            cairo_surface_destroy(state.cached_cover_surf)
+            _release_surf(state.cached_cover_surf)
             state.cached_cover_surf = nil
-            state.last_cover_fail = os.time()
+            state.last_cover_fail = now
             return
         end
         local cover_max = max(state.cover_w, state.cover_h)
         if cover_max == 0 then
-            cairo_surface_finish(state.cached_cover_surf)
-            cairo_surface_destroy(state.cached_cover_surf)
+            _release_surf(state.cached_cover_surf)
             state.cached_cover_surf = nil
-            state.last_cover_fail = os.time()
+            state.last_cover_fail = now
             return
         end
         local scale = size / cover_max
@@ -318,10 +320,10 @@ local function draw_cover(cr, x, y, size)
     end
 end
 
-local function draw_bg_image(cr)
-    local bg_name = get_config_val("BACKGROUND", "dark.png")
+local function draw_bg_image(cr, now)
+    local bg_name = get_config_val("BACKGROUND", "dark.png", now)
     if bg_name ~= state.last_bg_name then
-        if state.bg_surf then cairo_surface_finish(state.bg_surf); cairo_surface_destroy(state.bg_surf) end
+        _release_surf(state.bg_surf)
         state.bg_surf = nil
         state.last_bg_name = bg_name
     end
@@ -329,7 +331,7 @@ local function draw_bg_image(cr)
         local img_path = base_dir .. "/res/" .. bg_name
         state.bg_surf = cairo_image_surface_create_from_png(img_path)
         if cairo_surface_status(state.bg_surf) ~= CAIRO_STATUS_SUCCESS then
-            if state.bg_surf then cairo_surface_finish(state.bg_surf); cairo_surface_destroy(state.bg_surf) end
+            _release_surf(state.bg_surf)
             state.bg_surf = nil
         else
             state.bg_w = cairo_image_surface_get_width(state.bg_surf)
@@ -350,12 +352,13 @@ end
 
 function conky_main()
     if conky_window == nil then return end
-    load_colors_from_config()
     local now = os.time()
+    _frame_now = now
+    load_colors_from_config(now)
 
     if not state.iface then
-        local parsed_iface = conky_parse("${template0}")
-        state.iface = (parsed_iface and parsed_iface ~= "") and parsed_iface or "lo"
+        local parsed_iface = conky_parse("${template0}") or ""
+        state.iface = (parsed_iface ~= "") and parsed_iface or "lo"
         state.parse_str_base = format('${upspeedf %s}|${downspeedf %s}|${acpitemp}|${fs_used_perc /}|${cpu cpu0}|${memperc}', state.iface, state.iface)
     end
 
@@ -385,25 +388,23 @@ function conky_main()
     end
 
     if state.disk_update_counter == 0 then
-        pcall(function()
-            local handle = io.popen('timeout 2 ' .. base_dir .. '/scripts/get_mounts.sh')
-            if handle then
-                local res = {}
-                local ok = pcall(function()
-                    for line in handle:lines() do insert(res, line) end
-                end)
-                handle:close()
-                if not ok then return end
-                local paths_changed = false
-                for j = 1, 4 do
-                    local np = res[j] or "/dev/null"
-                    local nn = res[j+4] or "N/A"
-                    if state.disk_paths[j] ~= np then paths_changed = true end
-                    state.disk_paths[j], state.disk_names[j] = np, nn
-                end
-                if paths_changed then state.last_parse_str = nil end
+        os.execute('timeout 2 ' .. base_dir .. '/scripts/get_mounts.sh > /dev/shm/mimod_mounts.txt 2>/dev/null &')
+    end
+    if state.disk_update_counter == 2 then
+        local f = io.open('/dev/shm/mimod_mounts.txt', 'r')
+        if f then
+            local res = {}
+            for line in f:lines() do insert(res, line) end
+            f:close()
+            local paths_changed = false
+            for j = 1, 4 do
+                local np = res[j] or "/dev/null"
+                local nn = res[j+4] or "N/A"
+                if state.disk_paths[j] ~= np then paths_changed = true end
+                state.disk_paths[j], state.disk_names[j] = np, nn
             end
-        end)
+            if paths_changed then state.last_parse_str = nil end
+        end
     end
     state.disk_update_counter = (state.disk_update_counter + 1) % 60
 
@@ -413,7 +414,7 @@ function conky_main()
         if cr then
             local status, err = pcall(function()
                 cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND)
-                draw_bg_image(cr)
+                draw_bg_image(cr, now)
                 draw_ring(cr, 64, 298, 30, 10, state.cpu_perc, 100, raw_colors.CPU)
                 draw_ring(cr, 148, 298, 30, 10, state.mem_perc, 100, raw_colors.MEM)
                 draw_ring(cr, 233, 298, 30, 10, state.root_perc, 100, raw_colors.DISK)
@@ -423,8 +424,8 @@ function conky_main()
                     if state.disk_paths[i] ~= "/dev/null" then draw_ring(cr, pt[1], pt[2], 20, 6, state.disk_percs[i], 100, raw_colors.DISK) end
                 end
                 draw_network_chart(cr, state.up, state.down, state.nchart, 220, 147, 130, 30)
-                if get_config_val("COVER_ART", "true") ~= "false" then
-                    draw_cover(cr, 280, 415, 75)
+                if get_config_val("COVER_ART", "true", now) ~= "false" then
+                    draw_cover(cr, 280, 415, 75, now)
                 end
             end)
             if not status then print("Conky Lua Error: " .. tostring(err)) end
@@ -435,7 +436,7 @@ function conky_main()
 end
 
 function conky_get_weather_data(req)
-    local now = os.time()
+    local now = _frame_now > 0 and _frame_now or os.time()
     if now - state.last_weather_check > 30 or not state.cached_weather then
         local c = read_file(weather_cache_file)
         if c then
@@ -463,9 +464,9 @@ function conky_weather_icon()
 end
 
 local function get_unit_setting()
-    local now = os.time()
+    local now = _frame_now > 0 and _frame_now or os.time()
     if not state.unit_cache or now - state.unit_cache_time >= state.config_cache_ttl then
-        state.unit_cache = get_config_val("UNIT", "metric")
+        state.unit_cache = get_config_val("UNIT", "metric", now)
         state.unit_cache_time = now
     end
     return state.unit_cache
@@ -481,9 +482,9 @@ function conky_disk_name(idx) return state.disk_names[tonumber(idx)] or "N/A" en
 function conky_disk_perc(idx) return state.disk_percs[tonumber(idx)] or 0 end
 
 function conky_cpu_temp()
-    local now = os.time()
+    local now = _frame_now > 0 and _frame_now or os.time()
     if not state.cpu_unit_cache or now - state.cpu_unit_cache_time >= state.config_cache_ttl then
-        local override = get_config_val("TEMP_UNIT_OVERRIDE", "")
+        local override = get_config_val("TEMP_UNIT_OVERRIDE", "", now)
         state.cpu_unit_cache = (override ~= "") and ((override:upper() == "F") and "imperial" or "metric") or get_unit_setting()
         state.cpu_unit_cache_time = now
     end
@@ -493,11 +494,11 @@ function conky_cpu_temp()
 end
 
 function conky_get_ssid(fallback)
-    local now = os.time()
+    local now = _frame_now > 0 and _frame_now or os.time()
     if state.iface and now - state.last_ssid_check > 60 then
         if state.iface:sub(1, 1) == 'w' then
-            local sn = conky_parse('${wireless_essid ' .. fallback .. '}')
-            state.last_ssid = (sn and sn ~= "" and sn ~= "off" and sn ~= "N/A") and truncate(sn, 10) or fallback
+            local sn = conky_parse('${wireless_essid ' .. fallback .. '}') or ""
+            state.last_ssid = (sn ~= "" and sn ~= "off" and sn ~= "N/A") and truncate(sn, 10) or fallback
         else
             state.last_ssid = fallback
         end
@@ -507,14 +508,11 @@ function conky_get_ssid(fallback)
 end
 
 function conky_shutdown()
-    if state.bg_surf then
-        cairo_surface_finish(state.bg_surf)
-        cairo_surface_destroy(state.bg_surf)
-        state.bg_surf = nil
-    end
-    if state.cached_cover_surf then
-        cairo_surface_finish(state.cached_cover_surf)
-        cairo_surface_destroy(state.cached_cover_surf)
-        state.cached_cover_surf = nil
-    end
+    _release_surf(state.bg_surf);          state.bg_surf          = nil
+    _release_surf(state.cached_cover_surf); state.cached_cover_surf = nil
+    rgba_cache = {}
+    state.results_table = {}
+    state.config_cache_content = nil
+    state.cached_weather = nil
+    collectgarbage("collect")
 end
