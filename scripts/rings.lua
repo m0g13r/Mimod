@@ -64,6 +64,7 @@ local state = {
     cpu_unit_cache = nil, cpu_unit_cache_time = 0,
 }
 for i = 0, max_history_size_minus_1 do state.up[i] = 0.1; state.down[i] = 0.1 end
+local rgba_cache = {}
 
 local function read_file(path)
     local f = io.open(path, "r")
@@ -128,10 +129,19 @@ local function load_colors_from_config()
     raw_colors.NET_DOWN = parse_color(get_config_val("COLOR_NET_DOWN", ""), color_defaults.NET_DOWN)
     raw_colors.TEXT     = parse_color(get_config_val("COLOR_TEXT",     ""), color_defaults.TEXT)
     raw_colors.PROGRESS = parse_color(get_config_val("COLOR_PROGRESS", ""), color_defaults.PROGRESS)
+    rgba_cache = {}
 end
 
 local function hex_to_rgba(hex, alpha)
-    return ((hex / 65536) % 256) / 255.0, ((hex / 256) % 256) / 255.0, (hex % 256) / 255.0, alpha
+    local key = hex * 1024 + floor(alpha * 1023 + 0.5)
+    local c = rgba_cache[key]
+    if c then return c[1], c[2], c[3], c[4] end
+    local r = (floor(hex / 65536) % 256) / 255.0
+    local g = (floor(hex / 256)   % 256) / 255.0
+    local b = (          hex       % 256) / 255.0
+    c = {r, g, b, alpha}
+    rgba_cache[key] = c
+    return r, g, b, alpha
 end
 
 local function draw_ring(cr, x, y, radius, thickness, val, max_val, color_hex)
@@ -362,12 +372,13 @@ function conky_main()
         if state.last_parse_str then
             local parsed = conky_parse(state.last_parse_str)
             if parsed then
+                local rt = state.results_table
+                for i = #rt, 1, -1 do rt[i] = nil end
                 local i = 1
-                for k in pairs(state.results_table) do state.results_table[k] = nil end
-                for v in (parsed .. "|"):gmatch("(.-)|") do state.results_table[i] = v; i = i + 1 end
-                state.up[state.nchart], state.down[state.nchart] = safe_number(state.results_table[1], 0.1), safe_number(state.results_table[2], 0.1)
-                state.cpu_temp, state.root_perc, state.cpu_perc, state.mem_perc = safe_number(state.results_table[3], 0), safe_number(state.results_table[4], 0), safe_number(state.results_table[5], 0), safe_number(state.results_table[6], 0)
-                for j = 1, 4 do state.disk_percs[j] = safe_number(state.results_table[6+j], 0) end
+                for v in (parsed .. "|"):gmatch("(.-)|") do rt[i] = v; i = i + 1 end
+                state.up[state.nchart], state.down[state.nchart] = safe_number(rt[1], 0.1), safe_number(rt[2], 0.1)
+                state.cpu_temp, state.root_perc, state.cpu_perc, state.mem_perc = safe_number(rt[3], 0), safe_number(rt[4], 0), safe_number(rt[5], 0), safe_number(rt[6], 0)
+                for j = 1, 4 do state.disk_percs[j] = safe_number(rt[6+j], 0) end
             end
         end
         state.last_update = now

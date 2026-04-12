@@ -8,7 +8,8 @@ CACHE_FILE="/dev/shm/current_song_music_script.txt"
 POS_FILE="/dev/shm/music_position"
 PLACEHOLDER="$HOME/.config/conky/Mimod/res/noplayer.png"
 source "$HOME/.config/conky/Mimod/scripts/config" 2>/dev/null || true
-USER_AGENT=$(type -t get_random_ua >/dev/null && get_random_ua || echo "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+USER_AGENT=$(type -t get_random_ua >/dev/null && get_random_ua || \
+    echo "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 HAS_MAGICK=0
 command -v magick &>/dev/null && HAS_MAGICK=1
@@ -27,6 +28,7 @@ _cleanup() {
     for pid in "${_TV_WORKER_PIDS[@]}"; do
         kill "$pid" 2>/dev/null
     done
+    wait "${_TV_WORKER_PIDS[@]}" 2>/dev/null
     [[ -n "$_TV_FOUND_DIR" && -d "$_TV_FOUND_DIR" ]] && rm -rf "$_TV_FOUND_DIR"
     rm -f "/dev/shm/temp_cover_raw"
     exec 9>&-
@@ -40,6 +42,7 @@ make_cover_round_smart() {
     local mode="${3:-crop}"
     local bg_color="black"
     local opts=("-quiet")
+
     if [[ "$mode" == "pad" ]]; then
         local peak_brightness
         peak_brightness=$(magick "$source" -alpha off -scale 3x3\! \
@@ -51,11 +54,13 @@ make_cover_round_smart() {
     else
         opts+=(-resize 300x300^ -gravity center -extent 300x300)
     fi
-    magick "$source" "${opts[@]}" -gravity center -extent 300x300 \
+
+    local temp_target="${target}.tmp"
+    magick "$source" "${opts[@]}" \
         \( -size 300x300 xc:"$bg_color" -fill white -draw "circle 150,150 150,290" \) \
         -alpha Off -compose CopyOpacity -composite \
         -background "$bg_color" -compose over \
-        -resize 75x75 "$target"
+        -resize 75x75 "$temp_target" && mv -f "$temp_target" "$target"
 }
 
 url_safe_encode() {
@@ -73,7 +78,7 @@ url_safe_encode() {
             if (( (dec >= 65 && dec <= 90) || (dec >= 97 && dec <= 122) ||
                   (dec >= 48 && dec <= 57) ||
                   dec == 45 || dec == 46 || dec == 95 || dec == 126 )); then
-                encoded+=$(printf "\\x${byte}")
+                encoded+=$(printf "\x${byte}")
             else
                 encoded+="%${byte^^}"
             fi
@@ -87,19 +92,28 @@ clean_yt_title() {
     text=$(sed -E 's/\.[a-zA-Z0-9]{2,5}$//' <<< "$text")
     text="${text%%|*}"
     text="${text%%｜*}"
-    text=$(sed -E 's/ \((Official [^)]+|Audio|Full Album|HD|HQ|4K|Lyric[^)]*|Video|Edit|Remastered|Radio Edit|Original Mix)\)//gi' <<< "$text")
-    text=$(sed -E 's/ \[[^]]+\]//g; s/【[^】]*】//g; s/『[^』]*』//g' <<< "$text")
-    text=$(sed -E 's/ - Topic| (prod\.|feat\.|ft\.).*//gi' <<< "$text")
-    text=$(sed -E 's/[^[:alpha:][:digit:][:space:][:punct:]]//g; s/\|/-/g' <<< "$text")
-    sed -E 's/^ +//; s/ +$//; s/ {2,}/ /g' <<< "$text"
+    text=$(sed -E \
+        -e 's/ \((Official [^)]+|Audio|Full Album|HD|HQ|4K|Lyric[^)]*|Video|Edit|Remastered|Radio Edit|Original Mix)\)//gi' \
+        -e 's/ \[[^]]+\]//g' \
+        -e 's/【[^】]*】//g' \
+        -e 's/『[^』]*』//g' \
+        -e 's/ - Topic| (prod\.|feat\.|ft\.).*//gi' \
+        <<< "$text")
+    sed -E \
+        -e 's/[^[:alpha:][:digit:][:space:][:punct:]]//g' \
+        -e 's/\|/-/g' \
+        -e 's/^ +//; s/ +$//; s/ {2,}/ /g' \
+        <<< "$text"
 }
 
 clean_tv_title() {
     local text="$1"
-    text=$(sed -E 's/ im Livestream anschauen.*//gi' <<< "$text")
-    text=$(sed -E 's/^[A-Z]{2}: //g' <<< "$text")
-    text=$(sed -E 's/ (HD|FHD|4K|SD|LIVE|VOD)//gi' <<< "$text")
-    sed -E 's/^ +//; s/ +$//' <<< "$text"
+    sed -E \
+        -e 's/ im Livestream anschauen.*//gi' \
+        -e 's/^[A-Z]{2}: //g' \
+        -e 's/ (HD|FHD|4K|SD|LIVE|VOD)//gi' \
+        -e 's/^ +//; s/ +$//' \
+        <<< "$text"
 }
 
 perform_download() {
@@ -108,7 +122,8 @@ perform_download() {
     local mode="${2:-crop}"
     [[ -z "$url" || "$url" == "null" ]] && return 1
     local temp_raw="/dev/shm/temp_cover_raw"
-    if curl -s -L --fail --max-time 10 --connect-timeout 5 -A "$USER_AGENT" -o "$temp_raw" "$url"; then
+    if curl -s -L --fail --max-time 10 --connect-timeout 5 \
+            -A "$USER_AGENT" -o "$temp_raw" "$url"; then
         if magick "$temp_raw" -format "%[width]x%[height]" info: &>/dev/null; then
             make_cover_round_smart "$temp_raw" "$COVER_FILE" "$mode"
             rm -f "$temp_raw"
@@ -121,9 +136,13 @@ perform_download() {
 
 download_itunes_cover() {
     local search_query
-    if [[ -z "$1" ]]; then search_query=$(url_safe_encode "$2")
-    elif [[ "$2" == *"$1"* ]]; then search_query=$(url_safe_encode "$2")
-    else search_query=$(url_safe_encode "$1 $2"); fi
+    if [[ -z "$1" ]]; then
+        search_query=$(url_safe_encode "$2")
+    elif [[ "$2" == *"$1"* ]]; then
+        search_query=$(url_safe_encode "$2")
+    else
+        search_query=$(url_safe_encode "$1 $2")
+    fi
     search_query="${search_query//%20/+}"
     local cover_url
     cover_url=$(curl -s --max-time 2 -A "$USER_AGENT" \
@@ -135,9 +154,13 @@ download_itunes_cover() {
 
 download_deezer_cover() {
     local search_query
-    if [[ -z "$1" ]]; then search_query=$(url_safe_encode "$2")
-    elif [[ "$2" == *"$1"* ]]; then search_query=$(url_safe_encode "$2")
-    else search_query=$(url_safe_encode "$1 $2"); fi
+    if [[ -z "$1" ]]; then
+        search_query=$(url_safe_encode "$2")
+    elif [[ "$2" == *"$1"* ]]; then
+        search_query=$(url_safe_encode "$2")
+    else
+        search_query=$(url_safe_encode "$1 $2")
+    fi
     local cover_url
     cover_url=$(curl -s --max-time 2 -A "$USER_AGENT" \
         "https://api.deezer.com/search?q=$search_query" \
@@ -154,24 +177,30 @@ download_musicbrainz_cover() {
     mbid=$(curl -s --max-time 2 -A "$USER_AGENT" \
         "https://musicbrainz.org/ws/2/recording/?query=artist:$url_artist%20AND%20recording:$url_title&fmt=json&limit=1" \
         | jq -r '.recordings[0].releases[0].id' 2>/dev/null)
-    [[ -n "$mbid" && "$mbid" != "null" ]] && perform_download "https://coverartarchive.org/release/$mbid/front-500"
+    [[ -n "$mbid" && "$mbid" != "null" ]] && \
+        perform_download "https://coverartarchive.org/release/$mbid/front-500"
 }
 
+
 download_universal_tv_logo() {
+    [[ $HAS_MAGICK -eq 0 ]] && return 1
+
     local query="$1"
     local mode="${2:-pad}"
     local slug_raw slug_dash slug_none slug_under slug_vavoo slug_joyn
-    slug_raw=$(echo "$query" | tr '[:upper:]' '[:lower:]' | sed -E 's/ im livestream anschauen//gi; s/ [|] .*//g')
-    slug_none=$(echo "$slug_raw" | sed 's/[^a-z0-9]//g')
-    slug_dash=$(echo "$slug_raw" | sed -E 's/[^a-z0-9]+/-/g; s/^-|-$//g')
+    slug_raw=$(echo "$query" | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/ im livestream anschauen//gi; s/ [|] .*//g')
+    slug_none=$(echo "$slug_raw"  | sed 's/[^a-z0-9]//g')
+    slug_dash=$(echo "$slug_raw"  | sed -E 's/[^a-z0-9]+/-/g; s/^-|-$//g')
     slug_under=$(echo "$slug_raw" | sed -E 's/[^a-z0-9]+/_/g; s/^_|_$//g')
-    slug_vavoo=$(echo "$query" | sed 's/ /%20/g')
-    slug_joyn=$(echo "$query" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]//g')
+    slug_vavoo=$(echo "$query"    | sed 's/ /%20/g')
+    slug_joyn=$(echo "$query"     | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]//g')
 
     local tv_country="germany"
     if [[ -f "$HOME/.cache/weather.json" ]]; then
         local cc
-        cc=$(jq -r '.sys.country // empty' "$HOME/.cache/weather.json" 2>/dev/null | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+        cc=$(jq -r '.sys.country // empty' "$HOME/.cache/weather.json" 2>/dev/null \
+            | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
         case "$cc" in
             AT) tv_country="austria"     ;;
             CH) tv_country="switzerland" ;;
@@ -224,19 +253,33 @@ download_universal_tv_logo() {
     mkdir -p "$found_dir"
     _TV_FOUND_DIR="$found_dir"
     local url_file="$found_dir/urls.txt"
-    printf "%s\n" "${all_urls[@]}" | awk '!seen[$0]++' > "$url_file"
+
+    printf "%s\n" "${all_urls[@]}" | awk '!seen[$0]++' | head -n 60 > "$url_file"
+
     _TV_WORKER_PIDS=()
     local found_flag="$found_dir/found.txt"
 
     while IFS= read -r url; do
+        [[ -s "$found_flag" ]] && break
+
         (
+            exec 9>&-
             [[ -s "$found_flag" ]] && exit 0
             code=$(curl -s -o /dev/null -I -w '%{http_code}' -L \
                 --max-time 3 -A "$USER_AGENT" "$url" 2>/dev/null)
-            [[ "$code" == "200" ]] && echo "$url" >> "$found_flag"
+            if [[ "$code" == "200" ]]; then
+                echo "$url" > "${found_flag}.tmp.$$" && \
+                    mv -f "${found_flag}.tmp.$$" "$found_flag" 2>/dev/null || true
+            fi
         ) &
         _TV_WORKER_PIDS+=($!)
+
         if (( ${#_TV_WORKER_PIDS[@]} % 15 == 0 )); then
+            local alive=()
+            for pid in "${_TV_WORKER_PIDS[@]}"; do
+                kill -0 "$pid" 2>/dev/null && alive+=("$pid")
+            done
+            _TV_WORKER_PIDS=("${alive[@]}")
             wait -n 2>/dev/null || true
         fi
     done < "$url_file"
@@ -251,9 +294,7 @@ download_universal_tv_logo() {
         sleep 0.15
     done
 
-    for pid in "${_TV_WORKER_PIDS[@]}"; do
-        kill "$pid" 2>/dev/null
-    done
+    for pid in "${_TV_WORKER_PIDS[@]}"; do kill "$pid" 2>/dev/null; done
     wait "${_TV_WORKER_PIDS[@]}" 2>/dev/null
     _TV_WORKER_PIDS=()
 
@@ -300,8 +341,9 @@ main() {
     fi
 
     local is_tv=0
-    if [[ "$PLAYER" == *"vlc"* || "$PLAYER" == *"mpv"* || "$PLAYER" == *"chromium"* || "$PLAYER" == *"firefox"* ]]; then
-        if [[ "$TITLE" == *"Joyn"* || "$ARTIST" == *"Joyn"* ]]; then is_tv=1
+    if [[ "$PLAYER" == *"vlc"* || "$PLAYER" == *"mpv"* || \
+          "$PLAYER" == *"chromium"* || "$PLAYER" == *"firefox"* ]]; then
+        if   [[ "$TITLE" == *"Joyn"*  || "$ARTIST" == *"Joyn"*  ]]; then is_tv=1
         elif [[ "$TITLE" == *"Vavoo"* || "$ARTIST" == *"Vavoo"* ]]; then is_tv=2
         else is_tv=3; fi
     fi
@@ -313,10 +355,12 @@ main() {
 
     [[ -z "$RAW_LEN" || "$RAW_LEN" == "null" ]] && RAW_LEN=0
     [[ -z "$RAW_POS" || "$RAW_POS" == "null" ]] && RAW_POS=0
-    echo -n "$POS|$RAW_POS|$RAW_LEN" > "$POS_FILE"
+
+    printf "%s" "$POS|$RAW_POS|$RAW_LEN" > "${POS_FILE}.tmp" && \
+        mv -f "${POS_FILE}.tmp" "$POS_FILE"
 
     local CUR_SONG="$ARTIST|$TITLE|$STATUS"
-    local LAST_SONG
+    local LAST_SONG=""
     [[ -f "$CACHE_FILE" ]] && LAST_SONG=$(cat "$CACHE_FILE")
 
     if [[ "$LAST_SONG" != "$CUR_SONG" ]]; then
@@ -336,9 +380,10 @@ main() {
                 [[ $success -eq 0 ]] && download_itunes_cover      "$ARTIST" "$TITLE" && success=1
                 [[ $success -eq 0 ]] && download_musicbrainz_cover "$ARTIST" "$TITLE" && success=1
             fi
-            [[ $success -eq 0 && -f "$PLACEHOLDER" ]] && make_cover_round_smart "$PLACEHOLDER" "$COVER_FILE" "crop"
+            [[ $success -eq 0 && -f "$PLACEHOLDER" ]] && \
+                make_cover_round_smart "$PLACEHOLDER" "$COVER_FILE" "crop"
         fi
-        echo -n "$CUR_SONG" > "$CACHE_FILE"
+        printf "%s" "$CUR_SONG" > "${CACHE_FILE}.tmp" && mv -f "${CACHE_FILE}.tmp" "$CACHE_FILE"
     fi
 }
 

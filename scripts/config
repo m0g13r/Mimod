@@ -5,7 +5,7 @@ BASE_DIR="$HOME/.config/conky/Mimod"
 
 # Weather API Configuration
 CITY_ID=""
-API_KEY="1d1cdef8934hfer8fhdwidfc934c267910c01"
+API_KEY="1d1cdef84h54h7fe7s6fh434c267910c01"
 UNIT=""
 WEATHER_LANG=""
 
@@ -14,7 +14,7 @@ WEATHER_LANG=""
 NET_INTERFACE=""
 
 # Quote Source Configuration
-# Options: "ZENQUOTES" | "BRAINYQUOTE" | "RANDOMQUOTE" | "QUOTABLE" | "ROUNDROBIN"
+# Options: "ZENQUOTES" | "BRAINYQUOTE" | "RANDOMQUOTE" | "QUOTESLATE" | "ROUNDROBIN"
 # "ROUNDROBIN" cycles through all sources.
 QUOTE_SOURCE="ROUNDROBIN"
 
@@ -34,7 +34,7 @@ MOUNT_PATH_4=""
 # Options: "C" for Celsius, "F" for Fahrenheit, "" for automatic based on location
 TEMP_UNIT_OVERRIDE=""
 
-#Show Cover-Art .. needs 
+#Show Cover-Art
 COVER_ART="true"
 
 # ── colors (6-digit hex, # optional) ─────────────────────────────────────
@@ -76,7 +76,7 @@ BACKGROUND="semitrans2.png"
 export BASE_DIR CITY_ID API_KEY UNIT WEATHER_LANG NET_INTERFACE QUOTE_SOURCE
 export MOUNT_NAME_1 MOUNT_NAME_2 MOUNT_NAME_3 MOUNT_NAME_4
 export MOUNT_PATH_1 MOUNT_PATH_2 MOUNT_PATH_3 MOUNT_PATH_4
-export TEMP_UNIT_OVERRIDE COLOR_PROGRESS COLOR_ARTIST COLOR_PLAYER
+export TEMP_UNIT_OVERRIDE COLOR_PROGRESS COLOR_ARTIST COLOR_PLAYER COVER_ART
 
 # Fallback User Agents
 # A robust list of User-Agents to prevent API blocks

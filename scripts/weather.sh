@@ -8,7 +8,7 @@ CACHE_FILE="$HOME/.cache/weather.json"
 mkdir -p "$(dirname "$CACHE_FILE")"
 TEMP_FILE=$(mktemp "${CACHE_FILE}.XXXXXX")
 CACHE_EXPIRATION=600
-API_URL_BASE="http://api.openweathermap.org/data/2.5/weather?appid=$API_KEY"
+API_URL_BASE="https://api.openweathermap.org/data/2.5/weather?appid=$API_KEY"
 UA=$(get_random_ua)
 
 trap 'rm -f "$TEMP_FILE"' EXIT
@@ -37,8 +37,19 @@ fetch_data() {
     curl -s --max-time 5 \
         -H 'Referer: https://google.com' \
         -H 'Accept-Language: en-US,en;q=0.9' \
-        -k -A "$UA" "$1" 2>/dev/null \
-    || wget -qO- -T 5 --no-check-certificate \
+        -A "$UA" "$1" 2>/dev/null \
+    || wget -qO- -T 5 \
+        --header='Referer: https://google.com' \
+        --header='Accept-Language: en-US,en;q=0.9' \
+        -U "$UA" "$1" 2>/dev/null
+}
+
+fetch_geo() {
+    curl -s -4 --max-time 5 \
+        -H 'Referer: https://google.com' \
+        -H 'Accept-Language: en-US,en;q=0.9' \
+        -A "$UA" "$1" 2>/dev/null \
+    || wget -qO- -T 5 \
         --header='Referer: https://google.com' \
         --header='Accept-Language: en-US,en;q=0.9' \
         -U "$UA" "$1" 2>/dev/null
@@ -53,7 +64,11 @@ start_geoclue_agent() {
 }
 
 GEOCLUE_CMD=""
-for path in "/usr/libexec/geoclue-2.0/demos/where-am-i" "/usr/lib/geoclue-2.0/demos/where-am-i" "/usr/bin/where-am-i"; do
+for path in \
+    "/usr/libexec/geoclue-2.0/demos/where-am-i" \
+    "/usr/lib/geoclue-2.0/demos/where-am-i" \
+    "/usr/bin/where-am-i"
+do
     if [[ -x "$path" ]]; then
         GEOCLUE_CMD="$path"
         break
@@ -67,7 +82,8 @@ update_config() {
     local current_val
     current_val=$(grep "^${key}=" "$config_file" | cut -d'"' -f2)
     if [[ "$current_val" != "$value" ]]; then
-        sed -i "s|^\(${key}=\).*$|\1\"${value}\"|" "$config_file"
+        local safe_value="${value//|/\\|}"
+        sed -i "s|^\(${key}=\).*$|\1\"${safe_value}\"|" "$config_file"
     fi
 }
 
@@ -79,12 +95,12 @@ declare -A LANG_MAP=(
     ["PL"]="pl" ["CZ"]="cz" ["SK"]="sk" ["HU"]="hu" ["RO"]="ro"
     ["RU"]="ru" ["UA"]="ru" ["BY"]="ru"
     ["CN"]="zh_cn" ["TW"]="zh_tw" ["HK"]="zh_tw"
-    ["JP"]="ja" ["KR"]="kr"
-    ["BD"]="bn" ["IN"]="hi"
-    ["TR"]="tr" ["PT"]="pt" ["BR"]="pt"
-    ["NL"]="nl" ["SE"]="sv" ["NO"]="no" ["DK"]="da" ["FI"]="fi"
-    ["GR"]="el" ["EG"]="ar" ["SA"]="ar"
-    ["IL"]="he" ["VN"]="vi" ["TH"]="th" ["ID"]="id"
+    ["JP"]="ja"  ["KR"]="kr"
+    ["BD"]="bn"  ["IN"]="hi"
+    ["TR"]="tr"  ["PT"]="pt" ["BR"]="pt"
+    ["NL"]="nl"  ["SE"]="sv" ["NO"]="no" ["DK"]="da" ["FI"]="fi"
+    ["GR"]="el"  ["EG"]="ar" ["SA"]="ar"
+    ["IL"]="he"  ["VN"]="vi" ["TH"]="th" ["ID"]="id"
 )
 
 determine_locale() {
@@ -92,7 +108,7 @@ determine_locale() {
     local detected_lang="en"
     local detected_unit="metric"
     [[ -n "${LANG_MAP[$country]}" ]] && detected_lang="${LANG_MAP[$country]}"
-    [[ "$country" == "US" ]] && detected_unit="imperial"
+    [[ "$country" == "US" ]]        && detected_unit="imperial"
     WEATHER_LANG="$detected_lang"
     UNIT="$detected_unit"
     export WEATHER_LANG UNIT
@@ -106,8 +122,10 @@ get_location_and_config() {
         local GEOCLUE_DATA
         GEOCLUE_DATA=$(timeout 3s "$GEOCLUE_CMD" --timeout=2 2>/dev/null)
         if [[ -n "$GEOCLUE_DATA" ]]; then
-            LAT=$(printf "%s\n" "$GEOCLUE_DATA" | grep "Latitude:"  | cut -d: -f2 | tr -d '[:space:]' | sed 's/[^0-9.-]//g')
-            LON=$(printf "%s\n" "$GEOCLUE_DATA" | grep "Longitude:" | cut -d: -f2 | tr -d '[:space:]' | sed 's/[^0-9.-]//g' | sed 's/\.$//')
+            LAT=$(printf "%s\n" "$GEOCLUE_DATA" | grep "Latitude:"  | cut -d: -f2 \
+                | tr -d '[:space:]' | sed 's/[^0-9.-]//g')
+            LON=$(printf "%s\n" "$GEOCLUE_DATA" | grep "Longitude:" | cut -d: -f2 \
+                | tr -d '[:space:]' | sed 's/[^0-9.-]//g' | sed 's/\.$//')
         fi
     fi
 
@@ -121,7 +139,7 @@ get_location_and_config() {
         local provider_entry provider_url LAT_PATH LON_PATH COUNTRY_PATH GEO_DATA
         for provider_entry in "${GEO_PROVIDERS[@]}"; do
             IFS='|' read -r provider_url LAT_PATH LON_PATH COUNTRY_PATH <<< "$provider_entry"
-            GEO_DATA=$(fetch_data "$provider_url")
+            GEO_DATA=$(fetch_geo "$provider_url")
             [[ -z "$GEO_DATA" ]] && continue
             if [[ "$LAT_PATH" == ".loc" ]]; then
                 local LOC
@@ -147,22 +165,25 @@ get_location_and_config() {
     if [[ -n "$LAT" && "$LAT" != "null" ]]; then
         local GEO_API_URL="${API_URL_BASE}&lat=$LAT&lon=$LON"
         if fetch_data "$GEO_API_URL" > "$TEMP_FILE"; then
-            local CITY_ID_LOCAL COUNTRY_LOCAL
-            if command -v jq &>/dev/null; then
-                CITY_ID_LOCAL=$(jq -r '.id // empty'          "$TEMP_FILE" 2>/dev/null)
-                COUNTRY_LOCAL=$(jq -r '.sys.country // empty'  "$TEMP_FILE" 2>/dev/null)
-            else
-                CITY_ID_LOCAL=$(grep -o '"id":[0-9]*' "$TEMP_FILE" | head -1 | cut -d: -f2)
-                COUNTRY_LOCAL=$(grep -o '"country":"[^"]*"' "$TEMP_FILE" | head -1 | cut -d'"' -f4)
-            fi
-            if [[ -n "$CITY_ID_LOCAL" && "$CITY_ID_LOCAL" != "null" && -n "$COUNTRY_LOCAL" && "$COUNTRY_LOCAL" != "null" ]]; then
-                COUNTRY="$COUNTRY_LOCAL"
-                determine_locale "$COUNTRY"
-                update_config "CITY_ID"      "$CITY_ID_LOCAL"
-                update_config "UNIT"         "$UNIT"
-                update_config "WEATHER_LANG" "$WEATHER_LANG"
-                export CITY_ID="$CITY_ID_LOCAL"
-                return 0
+            if [[ -s "$TEMP_FILE" ]]; then
+                local CITY_ID_LOCAL COUNTRY_LOCAL
+                if command -v jq &>/dev/null; then
+                    CITY_ID_LOCAL=$(jq -r '.id // empty'         "$TEMP_FILE" 2>/dev/null)
+                    COUNTRY_LOCAL=$(jq -r '.sys.country // empty' "$TEMP_FILE" 2>/dev/null)
+                else
+                    CITY_ID_LOCAL=$(grep -o '"id":[0-9]*'          "$TEMP_FILE" | head -1 | cut -d: -f2)
+                    COUNTRY_LOCAL=$(grep -o '"country":"[^"]*"'     "$TEMP_FILE" | head -1 | cut -d'"' -f4)
+                fi
+                if [[ -n "$CITY_ID_LOCAL" && "$CITY_ID_LOCAL" != "null" && \
+                      -n "$COUNTRY_LOCAL"  && "$COUNTRY_LOCAL"  != "null" ]]; then
+                    COUNTRY="$COUNTRY_LOCAL"
+                    determine_locale "$COUNTRY"
+                    update_config "CITY_ID"      "$CITY_ID_LOCAL"
+                    update_config "UNIT"         "$UNIT"
+                    update_config "WEATHER_LANG" "$WEATHER_LANG"
+                    export CITY_ID="$CITY_ID_LOCAL"
+                    return 0
+                fi
             fi
         fi
     fi
@@ -176,19 +197,20 @@ fi
 
 API_URL="${API_URL_BASE}&id=$CITY_ID&units=$UNIT&lang=$WEATHER_LANG"
 
-if [[ ! -f "$CACHE_FILE" ]] || (( $(date +%s) - $(stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0) > CACHE_EXPIRATION )); then
+if [[ ! -f "$CACHE_FILE" ]] || \
+   (( $(date +%s) - $(stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0) > CACHE_EXPIRATION )); then
     if fetch_data "$API_URL" > "$TEMP_FILE"; then
         if [[ -s "$TEMP_FILE" ]]; then
             has_name=0; has_error=0
             if command -v jq &>/dev/null; then
-                jq -e '.name' "$TEMP_FILE" >/dev/null 2>&1 && has_name=1
-                grep -q '"cod":[4-5][0-9][0-9]' "$TEMP_FILE" && has_error=1
+                jq -e '.name' "$TEMP_FILE" >/dev/null 2>&1    && has_name=1
+                grep -q '"cod":[4-5][0-9][0-9]' "$TEMP_FILE"  && has_error=1
             else
-                grep -q '"name":"' "$TEMP_FILE" && has_name=1
-                grep -q '"cod":[4-5][0-9][0-9]' "$TEMP_FILE" && has_error=1
+                grep -q '"name":"' "$TEMP_FILE"               && has_name=1
+                grep -q '"cod":[4-5][0-9][0-9]' "$TEMP_FILE"  && has_error=1
             fi
             if (( has_name && !has_error )); then
-                mv "$TEMP_FILE" "$CACHE_FILE"
+                mv -f "$TEMP_FILE" "$CACHE_FILE"
             fi
         fi
     fi
