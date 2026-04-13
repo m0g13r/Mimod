@@ -68,8 +68,12 @@ fetch_and_save() {
             "RANDOMQUOTE") SRC_ACTUAL="ZENQUOTES"   ;;
             "ZENQUOTES")   SRC_ACTUAL="QUOTESLATE"  ;;
             "QUOTESLATE")  SRC_ACTUAL="QUOTABLE"    ;;
-            "QUOTABLE")    SRC_ACTUAL="BRAINYQUOTE" ;;
-            *)             SRC_ACTUAL="BRAINYQUOTE" ;;
+            "QUOTABLE")    SRC_ACTUAL="FORISMATIC"  ;;
+            "FORISMATIC")  SRC_ACTUAL="BRAINYQUOTE" ;;
+            *)
+                local sources=("BRAINYQUOTE" "RANDOMQUOTE" "ZENQUOTES" "QUOTESLATE" "QUOTABLE" "FORISMATIC")
+                SRC_ACTUAL=${sources[$RANDOM % ${#sources[@]}]}
+                ;;
         esac
     fi
 
@@ -92,12 +96,16 @@ fetch_and_save() {
                 | jq -r '.quote // empty' 2>/dev/null)
             ;;
         "QUOTESLATE")
-            RAW=$(fetch_url "https://quoteslate.ir/api/quotes/random" \
+            RAW=$(fetch_url "https://quoteslate.vercel.app/api/quotes/random" \
                 | jq -r '.quote // empty' 2>/dev/null)
             ;;
         "QUOTABLE")
             RAW=$(fetch_url "https://api.quotable.io/random" \
                 | jq -r '.content // empty' 2>/dev/null)
+            ;;
+        "FORISMATIC")
+            RAW=$(fetch_url "https://api.forismatic.com/api/1.0/?method=getQuote&format=json&lang=en" \
+                | jq -r '.quoteText // empty' 2>/dev/null)
             ;;
         *)
             RAW=$(fetch_url "https://zenquotes.io/api/random" \
@@ -115,12 +123,19 @@ fetch_and_save() {
         fi
     fi
 
+    local OLD_QUOTE
+    OLD_QUOTE=$(read_cache)
+
     if [[ -n "$FINAL" && ${#FINAL} -le $MAX_L ]]; then
         local tmp_cache="${CACHE_FILE}.tmp" tmp_render="${RENDER_FILE}.tmp"
         printf "%s\n---\n%s\n" "$SRC_ACTUAL" "$FINAL" > "$tmp_cache" && \
             mv -f "$tmp_cache" "$CACHE_FILE"
         format_output "$FINAL" > "$tmp_render" && \
             mv -f "$tmp_render" "$RENDER_FILE"
+    else
+        local tmp_cache="${CACHE_FILE}.tmp"
+        printf "%s\n---\n%s\n" "$SRC_ACTUAL" "${OLD_QUOTE:-...}" > "$tmp_cache" && \
+            mv -f "$tmp_cache" "$CACHE_FILE"
     fi
 }
 
@@ -159,7 +174,9 @@ main() {
     now=$(date +%s)
     age=$(( now - mtime ))
 
-    if (( age >= 1800 )); then
+    if [[ ! -f "$CACHE_FILE" ]]; then
+        fetch_and_save
+    elif (( age >= 1800 )); then
         _maybe_clear_stale_lock
         if mkdir "$LOCK_DIR" 2>/dev/null; then
             fetch_and_save &
