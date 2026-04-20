@@ -1,11 +1,9 @@
 #!/bin/bash
-
-# Base directory
 BASE_DIR="$HOME/.config/conky/Mimod"
 
 # Weather API Configuration
 CITY_ID=""
-API_KEY="1d1cdef84h54h7fe7s6fh434c267910c01"
+API_KEY="1d1cdef1hj4356ub4t54jd67910c01"
 UNIT=""
 WEATHER_LANG=""
 
@@ -71,12 +69,12 @@ COLOR_NET_DOWN="999999"
 # Background image (must be in /res/)
 BACKGROUND="dark.png"
 
-
 # Export all variables for use by other scripts
-export BASE_DIR CITY_ID API_KEY UNIT LANG NET_INTERFACE QUOTE_SOURCE
+export BASE_DIR CITY_ID API_KEY UNIT WEATHER_LANG NET_INTERFACE QUOTE_SOURCE
 export MOUNT_NAME_1 MOUNT_NAME_2 MOUNT_NAME_3 MOUNT_NAME_4
 export MOUNT_PATH_1 MOUNT_PATH_2 MOUNT_PATH_3 MOUNT_PATH_4
 export TEMP_UNIT_OVERRIDE COLOR_PROGRESS COLOR_ARTIST COLOR_PLAYER COVER_ART
+export COLOR_TEXT COLOR_ACCENT COLOR_CPU COLOR_MEM COLOR_TEMP COLOR_DISK COLOR_NET_UP COLOR_NET_DOWN
 
 # Fallback User Agents
 # A robust list of User-Agents to prevent API blocks
@@ -91,7 +89,7 @@ UAS=(
 )
 
 get_random_ua() {
-    echo "${UAS[$RANDOM % ${#UAS[@]}]}"
+    printf '%s\n' "${UAS[$((RANDOM % ${#UAS[@]}))]}"
 }
 
 export -f get_random_ua

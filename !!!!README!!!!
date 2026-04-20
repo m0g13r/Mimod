@@ -17,11 +17,12 @@ the fonts from fonts folder ....  maybe upadate the font cache  "fc-cache -fv"
 "jq" for parsing files
 "playerctl" for interacting with mediaplayer over mpris
 mpris adons/plugins (for interacting with playerctl) if needed (mpv needs one) .... enable media controll in firefox for mpris support
-u need curl and or wget to get files (weather/quote)
+curl and or wget to get files (weather/quote)
 "Translate Shell" for translateing the quote
 sed
 grep
-fmt .... is in coreutils
+awk
+fmt .... format output ...is in coreutils
 imagemagick ... for round covers/logos
 
 
