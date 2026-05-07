@@ -8,14 +8,17 @@ RENDER_FILE="$CACHE_DIR/conky_quote_render.txt"
 LOCK_FILE="/dev/shm/quote_script.lock"
 MAX_L=150
 WRAP=40
-UA=$(type -t get_random_ua >/dev/null 2>&1 && get_random_ua || printf "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
+UA=$(type -t get_random_ua >/dev/null 2>&1&&get_random_ua||printf "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
 mkdir -p "$CACHE_DIR"
 fetch_url(){
-curl -s -L --fail --max-time 5 -H 'Referer: https://google.com' -H 'Accept-Language: en-US,en;q=0.9' -A "$UA" "$1" 2>/dev/null \
-|| wget -qO- -T 5 --no-check-certificate --header='Referer: https://google.com' --header='Accept-Language: en-US,en;q=0.9' -U "$UA" "$1" 2>/dev/null \
-|| true
+curl -s -L --fail --max-time 5 -H 'Referer: https://google.com' -H 'Accept-Language: en-US,en;q=0.9' -A "$UA" "$1" 2>/dev/null\
+||wget -qO- -T 5 --no-check-certificate --header='Referer: https://google.com' --header='Accept-Language: en-US,en;q=0.9' -U "$UA" "$1" 2>/dev/null\
+||true
 }
-read_cache(){ [[ ! -f "$CACHE_FILE" ]] && return; awk 'found{print} /^---$/{found=1}' "$CACHE_FILE" 2>/dev/null || true; }
+read_cache(){
+[[ ! -f "$CACHE_FILE" ]]&&return
+awk 'found{print} /^---$/{found=1}' "$CACHE_FILE" 2>/dev/null||true
+}
 wrap_text(){
 local w="$WRAP"
 if command -v fmt &>/dev/null;then fmt -w "$w"
@@ -29,11 +32,11 @@ printf '%s\n' "$out"
 }
 fetch_and_save(){
 exec 9>"$LOCK_FILE"
-flock -n 9 || return 0
+flock -n 9||{ exec 9>&-;return 0; }
 local src="${QUOTE_SOURCE:-ROUNDROBIN}" last raw="" lang final tmp_c tmp_r
 if [[ "$src" == "ROUNDROBIN" ]];then
 last=$(head -n1 "$RENDER_FILE" 2>/dev/null|grep -o 'RR:[A-Z]*'|cut -c4-||true)
-[[ -z "$last" ]] && last=$(head -n1 "$CACHE_FILE" 2>/dev/null||true)
+[[ -z "$last" ]]&&last=$(head -n1 "$CACHE_FILE" 2>/dev/null||true)
 case "$last" in
 BRAINYQUOTE) src="RANDOMQUOTE";;
 RANDOMQUOTE) src="ZENQUOTES";;
@@ -54,27 +57,27 @@ if [[ -n "$raw" ]];then
 lang="${WEATHER_LANG:-de}";final=""
 if [[ "$lang" == "en" ]];then final="$raw"
 else final=$(timeout 10 trans -brief :"$lang" <<<"$raw" 2>/dev/null||true)
-[[ -z "$final" ]] && final="$raw"
+[[ -z "$final" ]]&&final="$raw"
 fi
 if [[ -n "$final" && ${#final} -le $MAX_L ]];then
 tmp_c="${CACHE_FILE}.tmp.$$";tmp_r="${RENDER_FILE}.tmp.$$"
-{ printf "%s\n---\n%s\n" "$src" "$final" >"$tmp_c" && mv -f "$tmp_c" "$CACHE_FILE"; } || rm -f "$tmp_c"
-{ { printf '# RR:%s\n' "$src";format_output "$final"; } >"$tmp_r" && mv -f "$tmp_r" "$RENDER_FILE"; } || rm -f "$tmp_r"
+{ printf "%s\n---\n%s\n" "$src" "$final" >"$tmp_c"&&mv -f "$tmp_c" "$CACHE_FILE"; }||rm -f "$tmp_c"
+{ { printf '# RR:%s\n' "$src";format_output "$final"; } >"$tmp_r"&&mv -f "$tmp_r" "$RENDER_FILE"; }||rm -f "$tmp_r"
 fi
 fi
 exec 9>&-
 }
 quote_main(){
 local mtime f r
-if [[ "${WEATHER_LANG:-de}" != "en" ]] && ! command -v trans &>/dev/null;then
+if [[ "${WEATHER_LANG:-de}" != "en" ]]&&! command -v trans &>/dev/null;then
 if [[ -s "$RENDER_FILE" ]];then grep -v '^#' "$RENDER_FILE"
-else f=$(read_cache);[[ -n "$f" ]] && format_output "$f" || true;fi
+else f=$(read_cache);[[ -n "$f" ]]&&format_output "$f"||true;fi
 return 0
 fi
-mtime=$(stat -c %Y "$CACHE_FILE" 2>/dev/null || printf "0")
-if (( $(date +%s) - mtime >= 1800 ));then
+mtime=$(stat -c %Y "$CACHE_FILE" 2>/dev/null||printf "0")
+if (( $(date +%s)-mtime >= 1800 ));then
 if [[ ! -s "$CACHE_FILE" ]];then fetch_and_save
-else (fetch_and_save) & disown $!;fi
+else (fetch_and_save)& disown $!;fi
 fi
 if [[ -s "$RENDER_FILE" ]];then grep -v '^#' "$RENDER_FILE"
 else
@@ -82,7 +85,7 @@ f=$(read_cache)
 if [[ -n "$f" ]];then
 r=$(format_output "$f")
 printf '%s\n' "$r"
-{ printf '# RR:%s\n' "${QUOTE_SOURCE:-}";printf '%s\n' "$r"; } >"$RENDER_FILE"
+{ printf '# RR:%s\n' "${QUOTE_SOURCE:-}";printf '%s\n' "$r"; }>"$RENDER_FILE"
 fi
 fi
 }

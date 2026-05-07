@@ -19,7 +19,6 @@ else
 readarray -t MOUNT_LIST < <(awk -v n="$needed" '$2~/^(\/media\/|\/run\/media\/|\/mnt\/.+)/{print $2;if(++c==n)exit}' /proc/mounts 2>/dev/null||true)
 fi
 for mnt in "${MOUNT_LIST[@]+"${MOUNT_LIST[@]}"}";do
-mnt="$(printf '%s' "$mnt")"
 [[ -z "$mnt" || ! -d "$mnt" ]] && continue
 PATHS+=("$mnt");NAMES+=("${mnt##*/}")
 done

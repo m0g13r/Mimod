@@ -36,7 +36,7 @@ b=$("$MAGICK_BIN" "$src" -alpha off -scale 3x3\! -format "%[fx:int(maxima*100)]"
 [[ "$b" -lt 40 ]]&&pbg="white"
 opts+=(-background "$pbg" -alpha remove -alpha off -resize 300x300 -gravity center -extent 300x300)
 else opts+=(-resize 300x300^ -gravity center -extent 300x300);fi
-"$MAGICK_BIN" "$src" "${opts[@]}" -gravity center -extent 300x300 \( -size 300x300 xc:"$bg" -fill white -draw "circle 150,150 150,290" \) -alpha Off -compose CopyOpacity -composite -background "$bg" -compose over -resize 75x75 "$dst" 2>/dev/null
+"$MAGICK_BIN" "$src" "${opts[@]}" \( -size 300x300 xc:"$bg" -fill white -draw "circle 150,150 150,290" \) -alpha Off -compose CopyOpacity -composite -background "$bg" -compose over -resize 75x75 "$dst" 2>/dev/null
 }
 url_safe_encode(){
 if command -v jq &>/dev/null;then jq -Rnr --arg x "$1" '$x|@uri'
@@ -56,7 +56,7 @@ clean_tv_title(){ sed -E -e 's/ im Livestream anschauen.*//gi' -e 's/ en [Dd]ire
 perform_download(){
 [[ $HAS_MAGICK -eq 0 || -z "${1:-}" || "$1" == "null" ]]&&return 1
 local tmp="/dev/shm/temp_cover_raw_$$"
-if curl -s -L --fail --max-time 10 --connect-timeout 5 -A "$USER_AGENT" -o "$tmp" "$1" 2>/dev/null&&[[ -s "$tmp" ]]&&"$MAGICK_BIN" "$tmp" -format "%[width]" info: &>/dev/null;then
+if curl -s -L --fail --max-time 10 --connect-timeout 5 -A "$USER_AGENT" -o "$tmp" "$1" 2>/dev/null&&[[ -s "$tmp" ]]&&"$MAGICK_BIN" -quiet "$tmp" -format "%[width]" info: &>/dev/null;then
 if make_cover_round_smart "$tmp" "$COVER_FILE" "${2:-crop}";then rm -f "$tmp";return 0;fi
 fi
 rm -f "$tmp";return 1
@@ -183,9 +183,9 @@ printf "%s\n" "${all_urls[@]}"|awk '!seen[$0]++' >"$ufile"
 local -a urls=()
 while IFS= read -r u;do urls+=("$u");done <"$ufile"
 local total=${#urls[@]} res_file="$fdir/results.txt"
-touch "$res_file"
+:>"$res_file"
 local title_hash logo_cache_file cached_url
-title_hash=$(printf '%s' "$q"|md5sum|cut -c1-8||printf '%s' "$q"|cksum|cut -d' ' -f1)
+title_hash=$(printf '%s' "$q"|md5sum 2>/dev/null|cut -c1-8||printf '%s' "$q"|cksum|cut -d' ' -f1)
 logo_cache_file="/dev/shm/tvlogo_${title_hash}.url"
 if [[ -f "$logo_cache_file" ]];then
 cached_url=$(<"$logo_cache_file")
@@ -199,11 +199,11 @@ local active=$((next_submit-${#finished[@]}))
 while [[ $active -lt $max_active && $next_submit -lt $total ]];do
 local u="${urls[$next_submit]}" idx=$next_submit
 (local code;code=$(curl -s -o /dev/null -I -w '%{http_code}' -L --max-time 2 --connect-timeout 1 -A "$USER_AGENT" "$u" 2>/dev/null||echo "000");echo "$idx $code $u" >>"$res_file") &
-_TV_WORKER_PIDS+=($!);((next_submit++));active=$((next_submit-${#finished[@]}))
+_TV_WORKER_PIDS+=($!);((next_submit++))||true;active=$((next_submit-${#finished[@]}))
 done
 active=$((next_submit-${#finished[@]}))
 if [[ $active -gt 0 ]];then wait -n 2>/dev/null||true;elif [[ $next_submit -ge $total ]];then break;fi
-while read -r idx code u||[[ -n "${idx:-}" ]];do
+while IFS=' ' read -r idx code u;do
 [[ -z "${idx:-}" || -z "${code:-}" || -z "${u:-}" ]]&&continue
 if [[ -z "${finished[$idx]:-}" ]];then
 finished[$idx]=$code
@@ -215,8 +215,10 @@ done <"$res_file"
 if [[ $best_200 -ne -1 ]];then
 local winner_found=1
 for((i=0;i<best_200;i++));do if [[ -z "${finished[$i]:-}" ]];then winner_found=0;break;fi;done
-[[ $winner_found -eq 1 ]]&&break
-if [[ $best_200 -lt 15 && $winner_found -eq 1 ]];then break;fi
+if [[ $winner_found -eq 1 ]];then
+[[ $best_200 -lt 15 ]]&&break
+break
+fi
 fi
 done
 for pid in "${_TV_WORKER_PIDS[@]+"${_TV_WORKER_PIDS[@]}"}";do kill "$pid" 2>/dev/null||true;done
@@ -228,17 +230,25 @@ if [[ -n "$surl" ]]&&perform_download "$surl" "$mode";then printf '%s' "$surl" >
 return 1
 }
 player_main(){
-local d=$'\x1f' DATA ARTIST TITLE STATUS ART_URL POS RAW_POS RAW_LEN PLAYER TV_RAW is_tv CUR_S LAST_S ok
-DATA=$(timeout 0.9 playerctl metadata --format "{{xesam:artist}}${d}{{xesam:title}}${d}{{status}}${d}{{mpris:artUrl}}${d}{{duration(position)}}${d}{{position}}${d}{{mpris:length}}${d}{{playerName}}" 2>/dev/null||true)
-if [[ -z "$DATA" ]];then
-if ! playerctl status >/dev/null 2>&1&&[[ -f "$CACHE_FILE" ]];then
+local d=$'\x1f' STATUS ARTIST TITLE ART_URL POS RAW_POS RAW_LEN PLAYER TV_RAW is_tv CUR_S LAST_S ok
+STATUS=$(playerctl status 2>/dev/null||echo "Stopped")
+case "${STATUS,,}" in
+*play*) STATUS="Playing";;
+*paus*) STATUS="Paused";;
+*) STATUS="Stopped";;
+esac
+local RAW_DATA
+RAW_DATA=$(playerctl metadata --format "{{xesam:artist}}${d}{{xesam:title}}${d}{{mpris:artUrl}}${d}{{duration(position)}}${d}{{position}}${d}{{mpris:length}}${d}{{playerName}}" 2>/dev/null|tr -d '\n\r'||true)
+if [[ -z "$RAW_DATA" ]];then
+if [[ "$STATUS" == "Stopped" && -f "$CACHE_FILE" ]];then
 [[ "$COVER_ART" == "true" && $HAS_MAGICK -eq 1 && -f "$PLACEHOLDER" ]]&&make_cover_round_smart "$PLACEHOLDER" "$COVER_FILE" "crop"
 rm -f "$CACHE_FILE" "$POS_FILE"
 fi
 return 0
 fi
-IFS="$d" read -r ARTIST TITLE STATUS ART_URL POS RAW_POS RAW_LEN PLAYER <<<"$DATA"
-STATUS="${STATUS:-Unknown}";TV_RAW="$TITLE"
+IFS="$d" read -r ARTIST TITLE ART_URL POS RAW_POS RAW_LEN PLAYER <<<"$RAW_DATA"
+ARTIST=${ARTIST//|/-};TITLE=${TITLE//|/-}
+TV_RAW="$TITLE"
 if [[ -z "$ARTIST" || "$ARTIST" == "null" ]]&&[[ "$TITLE" == *" - "* ]];then
 ARTIST="${TITLE%% - *}";TITLE="${TITLE#* - }"
 fi
@@ -248,13 +258,13 @@ if [[ "$TITLE" == *"Joyn"* || "$ARTIST" == *"Joyn"* ]];then is_tv=1
 elif [[ "$TITLE" == *"Vavoo"* || "$ARTIST" == *"Vavoo"* ]];then is_tv=2
 else is_tv=3;fi
 fi
-local DISPLAY_ARTIST="$ARTIST" DISPLAY_TITLE="$TITLE"
 local SEARCH_ARTIST SEARCH_TITLE
-SEARCH_ARTIST=$(clean_yt_title "$ARTIST");SEARCH_TITLE=$(clean_yt_title "$TITLE")
+SEARCH_ARTIST=$(clean_yt_title "$ARTIST")
+SEARCH_TITLE=$(clean_yt_title "$TITLE")
 printf '%s|%s|%s' "$POS" "${RAW_POS:-0}" "${RAW_LEN:-0}" >"$POS_FILE"
-CUR_S="$DISPLAY_ARTIST|$DISPLAY_TITLE|$STATUS";LAST_S=""
+CUR_S="$ARTIST|$TITLE|$STATUS";LAST_S=""
 [[ -f "$CACHE_FILE" ]]&&LAST_S=$(<"$CACHE_FILE")
-if [[ "${LAST_S%|*}" != "$DISPLAY_ARTIST|$DISPLAY_TITLE" && "$COVER_ART" == "true" && $HAS_MAGICK -eq 1 ]];then
+if [[ "${LAST_S%|*}" != "$ARTIST|$TITLE" && "$COVER_ART" == "true" && $HAS_MAGICK -eq 1 ]];then
 ok=0
 if [[ "$ART_URL" == file://* ]];then make_cover_round_smart "${ART_URL#file://}" "$COVER_FILE" "crop"&&ok=1
 elif [[ "$ART_URL" == http* ]];then perform_download "$ART_URL" "crop"&&ok=1
